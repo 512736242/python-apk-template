@@ -7,15 +7,15 @@ on:
       build_type:
         description: '构建类型'
         required: true
-        default: 'debug'
+        default: 'release'
         type: choice
         options:
           - debug
           - release
 
-  # push 到 main 分支时自动构建 (可选，取消注释启用)
-  # push:
-  #   branches: [ main ]
+  # push 到 main 分支时自动构建
+  push:
+    branches: [ main ]
 
 jobs:
   build:
@@ -54,23 +54,52 @@ jobs:
           pip install --upgrade pip
           pip install buildozer cython kivy
 
+      - name: Generate signing key (for release)
+        if: ${{ github.event.inputs.build_type == 'release' || github.event_name == 'push' }}
+        run: |
+          # 生成签名密钥 (密码: 123456)
+          keytool -genkey -v \
+            -keystore release.keystore \
+            -alias release \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass 123456 \
+            -keypass 123456 \
+            -dname "CN=Jay, OU=Dev, O=Jay, L=City, ST=State, C=CN"
+
+          # 更新 buildozer.spec 启用签名
+          sed -i 's/# android.keystore = release.keystore/android.keystore = release.keystore/' buildozer.spec
+          sed -i 's/# android.keyalias = release/android.keyalias = release/' buildozer.spec
+          sed -i 's/# android.keystore_password = 123456/android.keystore_password = 123456/' buildozer.spec
+          sed -i 's/# android.keyalias_password = 123456/android.keyalias_password = 123456/' buildozer.spec
+
+          echo "Signing key generated successfully"
+
       - name: Build APK
         run: |
-          # 设置构建类型
-          BUILD_TYPE=${{ github.event.inputs.build_type || 'debug' }}
+          BUILD_TYPE=${{ github.event.inputs.build_type || 'release' }}
           echo "Building $BUILD_TYPE APK..."
+          echo "Package: com.jay.python2apkexample"
+          echo "App Name: 示例计算器应用"
 
-          # 构建
           buildozer android $BUILD_TYPE
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: apk-${{ github.event.inputs.build_type || 'debug' }}
+          name: calculator-apk-${{ github.event.inputs.build_type || 'release' }}
           path: bin/*.apk
-          retention-days: 30
+          retention-days: 90
 
-      - name: Get APK info
+      - name: Build summary
         run: |
           echo "=== Build Complete ==="
+          echo ""
+          echo "APK Files:"
           ls -lh bin/*.apk
+          echo ""
+          echo "App Info:"
+          echo "  Name: 示例计算器应用"
+          echo "  Package: com.jay.python2apkexample"
+          echo "  Version: 1.0.0"

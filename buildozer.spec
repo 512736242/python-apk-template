@@ -1,11 +1,11 @@
 [app]
 
-# 应用名称 (修改这里)
-title = My Python App
+# 应用名称
+title = 示例计算器应用
 
-# 包名 (修改这里，格式: com.yourname.appname)
-package.name = mypythonapp
-package.domain = com.example
+# 包名
+package.name = python2apkexample
+package.domain = com.jay
 
 # 源代码目录
 source.dir = .
@@ -41,14 +41,14 @@ fullscreen = 0
 android.accept_sdk_license = True
 
 # ========== Release 签名配置 ==========
-# 构建 Release 版本前，需要创建签名密钥:
-# keytool -genkey -v -keystore ~/my-release-key.keystore -alias myapp -keyalg RSA -keysize 2048 -validity 10000
+# 签名密钥会在 GitHub Actions 中自动生成
+# 如需本地构建 Release，请创建密钥:
+# keytool -genkey -v -keystore release.keystore -alias release -keyalg RSA -keysize 2048 -validity 10000
 #
-# 然后取消下面的注释并填写信息:
-# android.keystore = ~/my-release-key.keystore
-# android.keyalias = myapp
-# android.keystore_password = 你的密码
-# android.keyalias_password = 你的密码
+# android.keystore = release.keystore
+# android.keyalias = release
+# android.keystore_password = 123456
+# android.keyalias_password = 123456
 
 [buildozer]
 log_level = 2
