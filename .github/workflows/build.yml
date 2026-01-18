@@ -40,14 +40,17 @@ jobs:
             unzip \
             openjdk-17-jdk \
             autoconf \
+            automake \
             libtool \
+            libtool-bin \
             pkg-config \
             zlib1g-dev \
             libncurses5-dev \
             libncursesw5-dev \
             cmake \
             libffi-dev \
-            libssl-dev
+            libssl-dev \
+            lld
 
       - name: Install Python dependencies
         run: |
