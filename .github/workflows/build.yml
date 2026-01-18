@@ -47,9 +47,11 @@ jobs:
           echo "Building $BUILD_TYPE APK..."
 
           docker run --rm \
+            --entrypoint="" \
             -v "$(pwd)":/home/user/hostcwd \
+            -w /home/user/hostcwd \
             kivy/buildozer:latest \
-            bash -c "cd /home/user/hostcwd && buildozer android $BUILD_TYPE"
+            buildozer android $BUILD_TYPE
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
