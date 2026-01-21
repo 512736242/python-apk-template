@@ -1,243 +1,286 @@
 """
-BDSM 论坛工具 - Modern UI Kivy 版本
-特点：侧边栏导航、Material Design 风格深色主题、平滑动画、圆角控件
+BDSM 论坛工具 - Kivy GUI 版本
+分类标签页 + 弹出对话框输入 + 用户名密码登录
+修复: 延迟初始化避免线程冲突
 """
 import os
 import sys
 import threading
-import json
 
 from kivy.app import App
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
-from kivy.uix.anchorlayout import AnchorLayout
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.textinput import TextInput
 from kivy.uix.button import Button
 from kivy.uix.scrollview import ScrollView
+from kivy.uix.tabbedpanel import TabbedPanel, TabbedPanelItem
 from kivy.uix.popup import Popup
 from kivy.uix.spinner import Spinner
 from kivy.uix.widget import Widget
-from kivy.uix.screenmanager import ScreenManager, Screen, FadeTransition, NoTransition
-from kivy.uix.behaviors import ButtonBehavior
+from kivy.uix.recycleview import RecycleView
+from kivy.uix.recycleview.views import RecycleDataViewBehavior
+from kivy.uix.recycleboxlayout import RecycleBoxLayout
+from kivy.properties import StringProperty, ListProperty, BooleanProperty
 from kivy.core.window import Window
 from kivy.clock import Clock, mainthread
 from kivy.core.text import LabelBase
 from kivy.metrics import dp
-from kivy.graphics import Color, RoundedRectangle, Rectangle
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.utils import get_color_from_hex
-from kivy.animation import Animation
 from functools import partial
 
-# ---------- 字体初始化 ----------
+# 注册中文字体
 DEFAULT_FONT = None
 
 def init_chinese_font():
+    """初始化中文字体，尝试多个来源"""
     global DEFAULT_FONT
-    # 尝试加载中文字体，优先级：项目目录 -> 系统目录 -> 默认
-    font_paths = [
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts', 'NotoSansSC-Regular.ttf'),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), 'msyh.ttc'), # Windows 测试常用
-        '/system/fonts/NotoSansCJK-Regular.ttc', # Android
+
+    # 1. 尝试项目内的字体文件
+    font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+    font_path = os.path.join(font_dir, 'NotoSansSC-Regular.ttf')
+    if os.path.exists(font_path):
+        try:
+            LabelBase.register(name='NotoSansSC', fn_regular=font_path)
+            DEFAULT_FONT = 'NotoSansSC'
+            print(f"使用项目字体: {font_path}")
+            return
+        except Exception as e:
+            print(f"加载项目字体失败: {e}")
+
+    # 2. 尝试 Android 系统中文字体
+    android_fonts = [
+        '/system/fonts/NotoSansCJK-Regular.ttc',
         '/system/fonts/NotoSansSC-Regular.otf',
         '/system/fonts/DroidSansFallback.ttf',
+        '/system/fonts/NotoSansHans-Regular.otf',
     ]
-    
-    for font_path in font_paths:
-        if os.path.exists(font_path):
+    for afont in android_fonts:
+        if os.path.exists(afont):
             try:
-                font_name = 'CustomChineseFont'
-                LabelBase.register(name=font_name, fn_regular=font_path)
-                DEFAULT_FONT = font_name
-                print(f"✅ 加载字体成功: {font_path}")
+                LabelBase.register(name='ChineseFont', fn_regular=afont)
+                DEFAULT_FONT = 'ChineseFont'
+                print(f"使用系统字体: {afont}")
                 return
             except Exception as e:
-                print(f"⚠️ 字体加载失败 {font_path}: {e}")
-    
-    print("⚠️ 未找到特定中文字体，使用系统默认")
+                print(f"加载系统字体 {afont} 失败: {e}")
+
+    # 3. 使用 Roboto 作为最后备选（可能不支持中文）
+    print("警告: 未找到中文字体，部分中文可能显示为方块")
+    DEFAULT_FONT = None
 
 init_chinese_font()
 
-# ---------- 现代化配色方案 (Cyberpunk/Modern Dark) ----------
-THEME = {
-    'bg_dark': get_color_from_hex('#111827'),      # 深色背景 (Gray 900)
-    'bg_sidebar': get_color_from_hex('#1F2937'),   # 侧边栏/卡片背景 (Gray 800)
-    'bg_input': get_color_from_hex('#374151'),     # 输入框背景 (Gray 700)
-    'primary': get_color_from_hex('#F43F5E'),      # 主色调 (Rose 500) - 活力红/粉
-    'primary_hover': get_color_from_hex('#BE123C'),# 主色调按压
-    'secondary': get_color_from_hex('#3B82F6'),    # 次要色 (Blue 500)
-    'text_main': get_color_from_hex('#F9FAFB'),    # 主要文字 (Gray 50)
-    'text_dim': get_color_from_hex('#9CA3AF'),     # 次要文字 (Gray 400)
-    'success': get_color_from_hex('#10B981'),      # 成功绿
-    'error': get_color_from_hex('#EF4444'),        # 错误红
-    'warning': get_color_from_hex('#F59E0B'),      # 警告黄
-    'divider': get_color_from_hex('#374151'),      # 分割线
+# 颜色主题
+COLORS = {
+    'bg': get_color_from_hex('#1a1a2e'),
+    'card': get_color_from_hex('#16213e'),
+    'primary': get_color_from_hex('#e94560'),
+    'secondary': get_color_from_hex('#0f3460'),
+    'text': get_color_from_hex('#eaeaea'),
+    'text_dim': get_color_from_hex('#888888'),
+    'success': get_color_from_hex('#4ecca3'),
+    'warning': get_color_from_hex('#ffc107'),
+    'error': get_color_from_hex('#ff6b6b'),
 }
 
-# ---------- 基础自定义控件 ----------
 
-class ModernWidget(Widget):
-    """辅助类，提供通用属性"""
-    font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
-
-class RoundedBox(BoxLayout):
-    """带圆角背景的 BoxLayout"""
-    def __init__(self, bg_color=THEME['bg_sidebar'], radius=dp(10), **kwargs):
-        super().__init__(**kwargs)
-        self.bg_color = bg_color
-        self.radius = radius
-        with self.canvas.before:
-            Color(*self.bg_color)
-            self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[self.radius])
-        self.bind(pos=self.update_rect, size=self.update_rect)
-
-    def update_rect(self, *args):
-        self.rect.pos = self.pos
-        self.rect.size = self.size
-
-class ModernLabel(Label):
-    """通用 Label"""
+class StyledSpinnerOption(Button):
+    """Spinner 下拉选项的自定义样式"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.background_normal = ''
+        self.background_color = COLORS['card']
+        self.color = COLORS['text']
         self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
-        self.color = kwargs.get('color', THEME['text_main'])
-
-class ModernButton(ButtonBehavior, BoxLayout):
-    """现代化按钮: 无边框，圆角，支持颜色变化"""
-    def __init__(self, text="", bg_color=THEME['primary'], press_color=THEME['primary_hover'], font_size=dp(16), radius=dp(8), **kwargs):
-        super().__init__(**kwargs)
-        self.bg_color = bg_color
-        self.press_color = press_color
-        self.original_bg = bg_color
-        self.padding = [dp(15), dp(10)]
         self.size_hint_y = None
-        self.height = dp(45)
-        
-        with self.canvas.before:
-            self.color_instruction = Color(*self.bg_color)
-            self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[radius])
-        
-        self.bind(pos=self.update_rect, size=self.update_rect)
-        self.bind(state=self.on_state)
+        self.height = dp(44)
 
-        self.label = ModernLabel(text=text, font_size=font_size, bold=True, halign='center', valign='middle')
-        self.add_widget(self.label)
 
-    def update_rect(self, *args):
-        self.rect.pos = self.pos
-        self.rect.size = self.size
-        self.label.text_size = self.size 
-
-    def on_state(self, instance, value):
-        if value == 'down':
-            self.color_instruction.rgba = self.press_color
-        else:
-            self.color_instruction.rgba = self.original_bg
-
-class ModernGhostButton(ModernButton):
-    """幽灵按钮（透明背景，用于次要操作）"""
+class StyledSpinner(Spinner):
+    """自定义样式下拉框"""
     def __init__(self, **kwargs):
-        bg = kwargs.pop('bg_color', [0, 0, 0, 0])
-        super().__init__(bg_color=bg, press_color=[1, 1, 1, 0.1], **kwargs)
-        self.label.color = THEME['text_dim']
+        super().__init__(**kwargs)
+        self.option_cls = StyledSpinnerOption
+        self.background_normal = ''
+        self.background_color = COLORS['secondary']
+        self.color = COLORS['text']
+        self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
+        self.dropdown_cls.max_height = dp(200)  # 设置下拉菜单最大高度
 
-class ModernInput(TextInput):
-    """现代化输入框"""
+
+class StyledButton(Button):
+    """自定义样式按钮"""
+    def __init__(self, bg_color=None, **kwargs):
+        super().__init__(**kwargs)
+        self.background_normal = ''
+        self.background_color = bg_color or COLORS['primary']
+        self.color = COLORS['text']
+        self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
+        self.bold = True
+
+
+class StyledTextInput(TextInput):
+    """自定义样式输入框"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self.background_normal = ''
         self.background_active = ''
-        self.background_color = THEME['bg_input']
-        self.foreground_color = THEME['text_main']
-        self.cursor_color = THEME['primary']
-        self.hint_text_color = THEME['text_dim']
+        self.background_color = COLORS['card']
+        self.foreground_color = COLORS['text']
+        self.cursor_color = COLORS['primary']
+        self.hint_text_color = COLORS['text_dim']
         self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
         self.padding = [dp(15), dp(12)]
-        self.write_tab = False # 禁止 Tab 键输入制表符，而是切换焦点
 
-class ModernSpinner(Spinner):
-    """下拉选择框样式"""
+
+class StyledLabel(Label):
+    """自定义样式标签"""
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.background_normal = ''
-        self.background_color = THEME['bg_input']
-        self.color = THEME['text_main']
+        self.color = COLORS['text']
         self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
-        self.option_cls = ModernSpinnerOption
 
-class ModernSpinnerOption(Button):
-    """下拉选项样式"""
+
+class LogItem(RecycleDataViewBehavior, BoxLayout):
+    """日志条目组件 - 用于RecycleView"""
+    text = StringProperty('')
+    log_color = ListProperty([1, 1, 1, 1])
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.background_normal = ''
-        self.background_color = THEME['bg_sidebar']
-        self.color = THEME['text_main']
-        self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
-        self.height = dp(44)
+        self.orientation = 'horizontal'
+        self.size_hint_y = None
+        self.padding = [dp(5), dp(2)]
 
-# ---------- 弹窗组件 ----------
+        self.label = Label(
+            text='',
+            size_hint_y=None,
+            halign='left',
+            valign='middle',
+            font_size=dp(12),
+            font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto',
+            markup=True
+        )
+        self.label.bind(texture_size=self._update_height)
+        self.add_widget(self.label)
+
+    def _update_height(self, instance, size):
+        self.label.height = max(size[1], dp(20))
+        self.height = self.label.height + dp(4)
+        self.label.text_size = (self.width - dp(10), None)
+
+    def refresh_view_attrs(self, rv, index, data):
+        self.text = data.get('text', '')
+        self.log_color = data.get('color', COLORS['text'])
+        self.label.text = self.text
+        self.label.color = self.log_color
+        self.label.text_size = (rv.width - dp(20), None)
+        return super().refresh_view_attrs(rv, index, data)
+
+
+class LogRecycleView(RecycleView):
+    """高性能日志RecycleView"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.data = []
+        self.viewclass = LogItem
+
+        layout = RecycleBoxLayout(
+            default_size=(None, dp(24)),
+            default_size_hint=(1, None),
+            size_hint_y=None,
+            orientation='vertical'
+        )
+        layout.bind(minimum_height=layout.setter('height'))
+        self.add_widget(layout)
+
+    def add_log(self, text, color=None):
+        """添加日志条目"""
+        if color is None:
+            color = COLORS['text']
+        self.data.append({'text': text, 'color': color})
+        # 限制最大条数
+        if len(self.data) > 500:
+            self.data = self.data[-300:]
+        self.refresh_from_data()
+        # 滚动到底部
+        Clock.schedule_once(lambda dt: setattr(self, 'scroll_y', 0), 0.1)
+
+    def clear_logs(self):
+        """清空日志"""
+        self.data = []
+        self.refresh_from_data()
+
+
+class CardLayout(BoxLayout):
+    """卡片样式布局"""
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        with self.canvas.before:
+            Color(*COLORS['card'])
+            self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(10)])
+        self.bind(pos=self._update_rect, size=self._update_rect)
+
+    def _update_rect(self, *args):
+        self.rect.pos = self.pos
+        self.rect.size = self.size
+
 
 class InputDialog(Popup):
-    """通用输入弹窗"""
+    """弹出输入对话框"""
     def __init__(self, title, fields, callback, **kwargs):
         super().__init__(**kwargs)
         self.title = title
-        self.title_font = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
+        self.title_color = COLORS['text']
         self.title_size = dp(18)
-        self.title_color = THEME['text_main']
-        self.separator_color = THEME['primary']
+        self.separator_color = COLORS['primary']
         self.size_hint = (0.85, None)
-        self.height = dp(100 + 65 * len(fields))
-        self.background_color = [0, 0, 0, 0.8] # 半透明遮罩
-        
-        # 弹窗主体背景
-        self.container = RoundedBox(bg_color=THEME['bg_sidebar'], orientation='vertical', padding=dp(20), spacing=dp(15))
-        
+        self.height = dp(80 + 60 * len(fields) + 70)
+        self.background_color = COLORS['card']
         self.callback = callback
         self.inputs = {}
 
+        content = BoxLayout(orientation='vertical', spacing=dp(15), padding=dp(15))
+
         for field in fields:
-            row = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(60), spacing=dp(5))
-            lbl = ModernLabel(
+            row = BoxLayout(size_hint_y=None, height=dp(45), spacing=dp(10))
+            lbl = StyledLabel(
                 text=field.get("label", ""),
-                size_hint_y=None, height=dp(20),
-                halign='left',
-                color=THEME['text_dim'],
-                font_size=dp(13)
+                size_hint_x=0.35,
+                halign='right',
+                valign='middle'
             )
             lbl.bind(size=lbl.setter('text_size'))
-            
-            inp = ModernInput(
+            inp = StyledTextInput(
                 text=str(field.get("default", "")),
                 hint_text=field.get("hint", ""),
                 multiline=False,
-                size_hint_y=None, height=dp(40)
+                size_hint_x=0.65
             )
             self.inputs[field.get("key", field.get("label"))] = inp
             row.add_widget(lbl)
             row.add_widget(inp)
-            self.container.add_widget(row)
+            content.add_widget(row)
 
-        # 按钮
+        # 按钮行
         btn_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(15))
-        cancel_btn = ModernButton(
+        cancel_btn = StyledButton(
             text='取消',
-            bg_color=THEME['bg_input'],
-            press_color=[0.3, 0.3, 0.3, 1],
+            bg_color=COLORS['secondary'],
             on_press=self.dismiss
         )
-        confirm_btn = ModernButton(
+        confirm_btn = StyledButton(
             text='确定',
-            bg_color=THEME['primary'],
             on_press=self.on_confirm
         )
         btn_row.add_widget(cancel_btn)
         btn_row.add_widget(confirm_btn)
-        
-        self.container.add_widget(Widget(size_hint_y=1)) # Spacer
-        self.container.add_widget(btn_row)
-        
-        self.content = self.container
+        content.add_widget(btn_row)
+
+        self.content = content
 
     def on_confirm(self, instance):
         values = {key: inp.text for key, inp in self.inputs.items()}
@@ -245,722 +288,858 @@ class InputDialog(Popup):
         if self.callback:
             self.callback(values)
 
-# ---------- 登录界面 ----------
 
-class LoginScreen(Screen):
+class LoginScreen(BoxLayout):
+    """登录界面"""
     def __init__(self, app, error_msg=None, **kwargs):
         super().__init__(**kwargs)
         self.app = app
-        
-        # 背景
+        self.orientation = 'vertical'
+        self.padding = dp(25)
+        self.spacing = dp(15)
+
+        # 背景色
         with self.canvas.before:
-            Color(*THEME['bg_dark'])
-            Rectangle(pos=self.pos, size=self.size)
-        
-        # 中心容器 (AnchorLayout用于居中)
-        anchor = AnchorLayout(anchor_x='center', anchor_y='center')
-        
-        # 登录卡片
-        card = RoundedBox(
-            size_hint=(None, None), 
-            size=(dp(340), dp(480)),
-            padding=dp(30),
-            spacing=dp(20),
-            orientation='vertical',
-            bg_color=THEME['bg_sidebar']
-        )
-        
-        # Logo/标题
-        header = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(80), spacing=dp(5))
-        title = ModernLabel(text="BDSM 论坛工具", font_size=dp(26), bold=True, color=THEME['primary'])
-        subtitle = ModernLabel(text="爬虫 / 投票 / 账号管理", font_size=dp(14), color=THEME['text_dim'])
-        header.add_widget(title)
-        header.add_widget(subtitle)
-        card.add_widget(header)
-        
-        # 登录方式
-        self.login_type = ModernSpinner(
+            Color(*COLORS['bg'])
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_bg, size=self._update_bg)
+
+        # 顶部空白
+        self.add_widget(Widget(size_hint_y=0.1))
+
+        # Logo/标题区
+        title_card = CardLayout(orientation='vertical', size_hint_y=None, height=dp(100), padding=dp(20))
+        title_card.add_widget(StyledLabel(
+            text='BDSM 论坛工具',
+            font_size=dp(28),
+            bold=True
+        ))
+        title_card.add_widget(StyledLabel(
+            text='爬虫 / 投票 / 账号管理',
+            font_size=dp(14),
+            color=COLORS['text_dim']
+        ))
+        self.add_widget(title_card)
+
+        self.add_widget(Widget(size_hint_y=0.05))
+
+        # 登录表单卡片
+        form_card = CardLayout(orientation='vertical', size_hint_y=None, height=dp(280), padding=dp(20), spacing=dp(12))
+
+        # 登录方式选择
+        self.login_type = StyledSpinner(
             text='手机号 + 密码',
             values=['手机号 + 密码', '短信验证码', '直接输入 Token'],
-            size_hint_y=None, height=dp(45)
+            size_hint_y=None,
+            height=dp(44)
         )
         self.login_type.bind(text=self.on_login_type_change)
-        card.add_widget(self.login_type)
-        
-        # 输入区
-        self.input_area = BoxLayout(orientation='vertical', spacing=dp(15), size_hint_y=None, height=dp(110))
-        
-        self.phone_input = ModernInput(hint_text="手机号", size_hint_y=None, height=dp(45))
-        self.password_input = ModernInput(hint_text="密码", password=True, size_hint_y=None, height=dp(45))
-        
-        self.input_area.add_widget(self.phone_input)
-        self.input_area.add_widget(self.password_input)
-        card.add_widget(self.input_area)
-        
-        # 发送验证码按钮 (默认隐藏)
-        self.sms_btn_container = BoxLayout(size_hint_y=None, height=dp(0))
-        self.sms_btn = ModernButton(text="获取验证码", bg_color=THEME['secondary'], font_size=dp(14))
-        self.sms_btn.bind(on_press=self.send_sms)
-        self.sms_btn_container.add_widget(self.sms_btn)
-        self.sms_btn_container.opacity = 0
-        card.add_widget(self.sms_btn_container)
-        
-        # 状态提示
-        self.status_label = ModernLabel(
-            text=error_msg if error_msg else "", 
-            color=THEME['error'], 
-            font_size=dp(12),
-            size_hint_y=None, height=dp(20)
+        form_card.add_widget(self.login_type)
+
+        # 手机号
+        self.phone_input = StyledTextInput(
+            hint_text='手机号',
+            multiline=False,
+            size_hint_y=None,
+            height=dp(44)
         )
-        card.add_widget(self.status_label)
-        
-        # 按钮区
-        self.login_btn = ModernButton(text="立即登录", on_press=self.do_login)
-        skip_btn = ModernGhostButton(text="跳过登录 (功能受限)", on_press=self.skip_login)
-        
-        card.add_widget(self.login_btn)
-        card.add_widget(skip_btn)
-        
-        # 已保存账号区域 (底部)
-        self.saved_accounts_container = BoxLayout(orientation='vertical', size_hint_y=1)
-        card.add_widget(self.saved_accounts_container)
-        
-        anchor.add_widget(card)
-        self.add_widget(anchor)
-        
-        # 延迟加载账号
+        form_card.add_widget(self.phone_input)
+
+        # 密码/验证码/Token
+        self.password_input = StyledTextInput(
+            hint_text='密码',
+            multiline=False,
+            password=True,
+            size_hint_y=None,
+            height=dp(44)
+        )
+        form_card.add_widget(self.password_input)
+
+        # 发送验证码按钮容器
+        self.sms_container = BoxLayout(size_hint_y=None, height=dp(44))
+        self.sms_btn = StyledButton(
+            text='发送验证码',
+            bg_color=COLORS['secondary'],
+            on_press=self.send_sms
+        )
+        form_card.add_widget(self.sms_container)
+
+        # 按钮行
+        btn_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
+
+        # 登录按钮
+        self.login_btn = StyledButton(
+            text='登  录',
+            on_press=self.do_login
+        )
+        btn_row.add_widget(self.login_btn)
+
+        # 跳过登录按钮
+        skip_btn = StyledButton(
+            text='跳过登录',
+            bg_color=COLORS['secondary'],
+            on_press=self.skip_login
+        )
+        btn_row.add_widget(skip_btn)
+
+        form_card.add_widget(btn_row)
+
+        self.add_widget(form_card)
+
+        # 已保存账号区
+        self.saved_accounts_layout = BoxLayout(orientation='vertical', size_hint_y=0.35)
+        self.add_widget(self.saved_accounts_layout)
+
+        # 状态显示
+        self.status_label = StyledLabel(
+            text=error_msg if error_msg else '',
+            size_hint_y=None,
+            height=dp(30),
+            color=COLORS['error'] if error_msg else COLORS['text_dim']
+        )
+        self.add_widget(self.status_label)
+
+        # 延迟加载已保存账号
         Clock.schedule_once(self.load_saved_accounts, 0.5)
 
+    def _update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+
+    def load_saved_accounts(self, dt=None):
+        self.saved_accounts_layout.clear_widgets()
+
+        # 检查 spider 是否已初始化
+        if not self.app.spider:
+            self.saved_accounts_layout.add_widget(StyledLabel(
+                text='初始化中...',
+                size_hint_y=None,
+                height=dp(30),
+                font_size=dp(14),
+                color=COLORS['warning']
+            ))
+            return
+
+        try:
+            from app.your_code import load_accounts
+            accounts = load_accounts(self.app.spider)
+
+            if accounts:
+                header = StyledLabel(
+                    text='已保存账号',
+                    size_hint_y=None,
+                    height=dp(30),
+                    font_size=dp(14),
+                    color=COLORS['text_dim']
+                )
+                self.saved_accounts_layout.add_widget(header)
+
+                scroll = ScrollView(size_hint_y=1)
+                acc_list = GridLayout(cols=1, spacing=dp(8), size_hint_y=None, padding=[0, dp(5)])
+                acc_list.bind(minimum_height=acc_list.setter('height'))
+
+                for i, acc in enumerate(accounts[:4]):
+                    name = acc.get("昵称", "未命名")
+                    phone = acc.get("手机号", "")
+                    phone_display = phone[:3] + "****" + phone[-4:] if len(phone) >= 7 else "Token"
+
+                    btn = StyledButton(
+                        text=f'{name} ({phone_display})',
+                        size_hint_y=None,
+                        height=dp(42),
+                        bg_color=COLORS['secondary']
+                    )
+                    btn.bind(on_press=partial(self.quick_login, acc))
+                    acc_list.add_widget(btn)
+
+                scroll.add_widget(acc_list)
+                self.saved_accounts_layout.add_widget(scroll)
+        except Exception as e:
+            print(f"加载账号失败: {e}")
+
     def on_login_type_change(self, spinner, text):
-        self.password_input.text = ""
-        
+        self.sms_container.clear_widgets()
+
+        # 清空密码/验证码/Token输入框
+        self.password_input.text = ''
+
         if text == '手机号 + 密码':
             self.phone_input.hint_text = '手机号'
             self.phone_input.disabled = False
             self.password_input.hint_text = '密码'
             self.password_input.password = True
-            self.hide_sms_btn()
         elif text == '短信验证码':
             self.phone_input.hint_text = '手机号'
             self.phone_input.disabled = False
             self.password_input.hint_text = '验证码'
             self.password_input.password = False
-            self.show_sms_btn()
-        else:  # Token
-            self.phone_input.hint_text = 'Token 登录无需手机号'
+            self.sms_container.add_widget(self.sms_btn)
+        else:  # 直接输入 Token
+            self.phone_input.hint_text = '（不需要）'
+            self.phone_input.text = ''
             self.phone_input.disabled = True
-            self.password_input.hint_text = '在此粘贴 Token'
+            self.password_input.hint_text = 'Token'
             self.password_input.password = False
-            self.hide_sms_btn()
 
-    def show_sms_btn(self):
-        self.sms_btn_container.height = dp(45)
-        self.sms_btn_container.opacity = 1
-        self.input_area.height = dp(110) # 保持高度适应
+    def send_sms(self, instance):
+        phone = self.phone_input.text.strip()
+        if len(phone) != 11:
+            self.status_label.text = '手机号格式错误'
+            return
 
-    def hide_sms_btn(self):
-        self.sms_btn_container.height = dp(0)
-        self.sms_btn_container.opacity = 0
+        self.status_label.text = '发送中...'
+        threading.Thread(target=self._send_sms_thread, args=(phone,), daemon=True).start()
 
-    def load_saved_accounts(self, dt):
-        if not self.app.spider: return
+    def _send_sms_thread(self, phone):
         try:
-            from your_code import load_accounts
-        except ImportError:
-            from app.your_code import load_accounts
+            from app.your_code import send_sms_code
+            success = send_sms_code(self.app.spider, phone)
+            self.update_status('验证码已发送' if success else '发送失败')
+        except Exception as e:
+            self.update_status(f'发送失败: {e}')
 
-        accounts = load_accounts(self.app.spider)
-        if accounts:
-            lbl = ModernLabel(text="快速登录", size_hint_y=None, height=dp(25), font_size=dp(12), color=THEME['text_dim'])
-            self.saved_accounts_container.add_widget(lbl)
-            
-            scroll = ScrollView(size_hint_y=1)
-            grid = GridLayout(cols=1, spacing=dp(8), size_hint_y=None)
-            grid.bind(minimum_height=grid.setter('height'))
-            
-            for acc in accounts[:3]: # 只显示前3个
-                name = acc.get("昵称", "未命名")
-                phone = acc.get("手机号", "")
-                display = f"{name} ({phone[-4:] if len(phone)>4 else 'Token'})"
-                
-                btn = ModernButton(
-                    text=display, 
-                    bg_color=THEME['bg_input'], 
-                    radius=dp(5), 
-                    font_size=dp(13),
-                    height=dp(35)
-                )
-                btn.bind(on_press=partial(self.quick_login, acc))
-                grid.add_widget(btn)
-                
-            scroll.add_widget(grid)
-            self.saved_accounts_container.add_widget(scroll)
+    def skip_login(self, instance):
+        """跳过登录，直接进入主界面"""
+        self.status_label.text = '未登录模式，部分功能不可用'
+        self.status_label.color = COLORS['warning']
+        self.app.token = None  # 确保 token 为 None
+        Clock.schedule_once(lambda dt: self.app.show_main_screen(), 0.3)
 
     def do_login(self, instance):
+        # 检查 spider 是否已初始化
         if not self.app.spider:
-            self.status_label.text = "初始化失败"
+            self.status_label.text = '系统未初始化，请重启应用'
+            self.status_label.color = COLORS['error']
             return
-            
-        self.status_label.text = "登录中..."
+
+        self.status_label.text = '登录中...'
         self.login_btn.disabled = True
         threading.Thread(target=self._login_thread, daemon=True).start()
 
     def _login_thread(self):
         try:
-            try:
-                from your_code import login_with_account, test_token_valid
-            except ImportError:
-                from app.your_code import login_with_account, test_token_valid
+            # 再次检查 spider
+            if not self.app.spider:
+                self.update_status('系统未初始化')
+                self.enable_login_btn()
+                return
+
+            from app.your_code import login_with_account, test_token_valid
 
             login_type = self.login_type.text
             phone = self.phone_input.text.strip()
-            pwd = self.password_input.text.strip()
-            
+            password = self.password_input.text.strip()
+
             token = None
-            if login_type.startswith('手机号'):
-                token = login_with_account(self.app.spider, phone=phone, password=pwd, login_type=1)
-            elif login_type.startswith('短信'):
-                token = login_with_account(self.app.spider, phone=phone, pcode=pwd, login_type=2)
+            if login_type == '手机号 + 密码':
+                token = login_with_account(self.app.spider, phone=phone, password=password, login_type=1)
+            elif login_type == '短信验证码':
+                token = login_with_account(self.app.spider, phone=phone, pcode=password, login_type=2)
             else:
-                token = pwd
-            
+                token = password
+                if len(token) < 20:
+                    self.update_status('Token 过短')
+                    self.enable_login_btn()
+                    return
+
             if token and test_token_valid(self.app.spider, token):
-                self.app.token = token
                 self.app.spider.set_token(token)
-                self.update_status("登录成功", success=True)
-                Clock.schedule_once(lambda dt: self.app.switch_to_main(), 0.5)
+                self.app.token = token
+                self.update_status('登录成功')
+                Clock.schedule_once(lambda dt: self.app.show_main_screen(), 0.3)
             else:
-                self.update_status("登录失败或 Token 无效")
-                self.enable_btn()
+                self.update_status('登录失败')
+                self.enable_login_btn()
         except Exception as e:
-            self.update_status(f"错误: {str(e)}")
-            self.enable_btn()
+            self.update_status(f'登录错误: {e}')
+            self.enable_login_btn()
 
     def quick_login(self, acc, instance):
         token = acc.get("Token")
         if token:
-            self.status_label.text = "自动登录中..."
+            self.status_label.text = '登录中...'
             threading.Thread(target=self._quick_login_thread, args=(token, acc), daemon=True).start()
-            
+
     def _quick_login_thread(self, token, acc):
         try:
-            try:
-                from your_code import test_token_valid, load_accounts, save_accounts
-            except ImportError:
-                from app.your_code import test_token_valid, load_accounts, save_accounts
-            
+            from app.your_code import test_token_valid, load_accounts, save_accounts
             import time
+
             if test_token_valid(self.app.spider, token):
-                self.app.token = token
                 self.app.spider.set_token(token)
-                # 更新登录时间
+                self.app.token = token
                 accounts = load_accounts(self.app.spider)
                 for a in accounts:
                     if a.get("Token") == token:
                         a["最后登录"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                        break
                 save_accounts(self.app.spider, accounts)
-                
-                self.update_status("登录成功", success=True)
-                Clock.schedule_once(lambda dt: self.app.switch_to_main(), 0.5)
+                self.update_status('登录成功')
+                Clock.schedule_once(lambda dt: self.app.show_main_screen(), 0.3)
             else:
-                self.update_status("Token 已过期")
+                self.update_status('Token 已失效')
         except Exception as e:
-            self.update_status(f"错误: {e}")
-
-    def send_sms(self, instance):
-        phone = self.phone_input.text.strip()
-        if len(phone) != 11:
-            self.status_label.text = "请输入正确手机号"
-            return
-        self.status_label.text = "发送中..."
-        threading.Thread(target=self._send_sms_thread, args=(phone,), daemon=True).start()
-        
-    def _send_sms_thread(self, phone):
-        try:
-            try: from your_code import send_sms_code
-            except: from app.your_code import send_sms_code
-            if send_sms_code(self.app.spider, phone):
-                self.update_status("验证码已发送", success=True)
-            else:
-                self.update_status("发送失败")
-        except Exception as e:
-            self.update_status(f"错误: {e}")
-
-    def skip_login(self, instance):
-        self.app.token = None
-        self.app.switch_to_main()
+            self.update_status(f'登录错误: {e}')
 
     @mainthread
-    def update_status(self, text, success=False):
+    def update_status(self, text):
         self.status_label.text = text
-        self.status_label.color = THEME['success'] if success else THEME['error']
 
     @mainthread
-    def enable_btn(self):
+    def enable_login_btn(self):
         self.login_btn.disabled = False
 
-# ---------- 主界面组件 ----------
-
-class NavButton(ButtonBehavior, BoxLayout):
-    """侧边栏导航按钮"""
-    def __init__(self, text, icon_text, screen_name, nav_callback, **kwargs):
-        super().__init__(**kwargs)
-        self.screen_name = screen_name
-        self.nav_callback = nav_callback
-        self.size_hint_y = None
-        self.height = dp(50)
-        self.padding = [dp(15), 0]
-        self.spacing = dp(15)
-        
-        with self.canvas.before:
-            self.bg_color = Color(0, 0, 0, 0) # 默认透明
-            self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(8)])
-            
-        self.bind(pos=self.update_rect, size=self.update_rect)
-        
-        # 图标 (用文字模拟)
-        self.icon = Label(text=icon_text, font_size=dp(18), size_hint_x=None, width=dp(20), color=THEME['text_dim'])
-        # 文字
-        self.lbl = Label(text=text, font_size=dp(15), font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto', 
-                        halign='left', valign='middle', color=THEME['text_dim'])
-        self.lbl.bind(size=self.lbl.setter('text_size'))
-        
-        self.add_widget(self.icon)
-        self.add_widget(self.lbl)
-        
-        self.bind(on_press=self.on_click)
-
-    def update_rect(self, *args):
-        self.rect.pos = self.pos
-        self.rect.size = self.size
-
-    def on_click(self, instance):
-        self.nav_callback(self.screen_name)
-
-    def set_active(self, active):
-        if active:
-            self.bg_color.rgba = THEME['primary']
-            self.bg_color.a = 0.15 # 半透明背景
-            self.lbl.color = THEME['primary']
-            self.icon.color = THEME['primary']
-        else:
-            self.bg_color.rgba = [0, 0, 0, 0]
-            self.lbl.color = THEME['text_dim']
-            self.icon.color = THEME['text_dim']
-
-class ActionScreen(Screen):
-    """通用操作面板屏幕"""
-    def __init__(self, title, actions, main_screen_ref, **kwargs):
-        super().__init__(**kwargs)
-        self.main_ref = main_screen_ref
-        
-        # 布局
-        root = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(20))
-        
-        # 标题栏
-        header = BoxLayout(size_hint_y=None, height=dp(40))
-        header.add_widget(ModernLabel(text=title, font_size=dp(22), bold=True, halign='left', valign='middle'))
-        root.add_widget(header)
-        
-        # 操作按钮网格
-        grid = GridLayout(cols=2, spacing=dp(15), size_hint_y=None)
-        grid.bind(minimum_height=grid.setter('height'))
-        
-        for btn_text, callback_func in actions:
-            btn = ModernButton(
-                text=btn_text, 
-                bg_color=THEME['bg_sidebar'], 
-                press_color=THEME['primary'],
-                height=dp(80) # 更大的块状按钮
-            )
-            btn.bind(on_press=callback_func)
-            grid.add_widget(btn)
-            
-        root.add_widget(grid)
-        root.add_widget(Widget()) # 填充底部
-        
-        self.add_widget(root)
 
 class MainScreen(BoxLayout):
-    """主布局：侧边栏 + 内容区 + 日志区"""
+    """主界面 - 标签页"""
     def __init__(self, app, **kwargs):
         super().__init__(**kwargs)
         self.app = app
-        self.spacing = 0
-        self.orientation = 'horizontal'
-        
-        # 1. 侧边栏
-        sidebar = BoxLayout(orientation='vertical', size_hint_x=None, width=dp(220))
-        with sidebar.canvas.before:
-            Color(*THEME['bg_sidebar'])
-            Rectangle(pos=sidebar.pos, size=sidebar.size)
-        
-        # 侧边栏标题
-        app_title = ModernLabel(text="BDSM Tools", font_size=dp(20), bold=True, color=THEME['primary'], size_hint_y=None, height=dp(80))
-        sidebar.add_widget(app_title)
-        
-        # 导航按钮区
-        self.nav_layout = BoxLayout(orientation='vertical', spacing=dp(5), padding=dp(10), size_hint_y=1)
-        self.nav_btns = {}
-        
-        nav_items = [
-            ("crawler", "帖子爬虫", "🕷️"),
-            ("search", "搜索功能", "🔍"),
-            ("vote", "自动投票", "🗳️"),
-            ("follow", "关注列表", "❤️"),
-            ("account", "账号管理", "👤")
-        ]
-        
-        for name, text, icon in nav_items:
-            btn = NavButton(text, icon, name, self.switch_content)
-            self.nav_layout.add_widget(btn)
-            self.nav_btns[name] = btn
-            
-        self.nav_layout.add_widget(Widget()) # 推到底部
-        
-        # 底部状态/退出
-        user_info = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(80), padding=dp(10), spacing=dp(5))
-        
-        token_preview = self.app.token[:6] + "..." if self.app.token else "未登录"
-        status_color = THEME['success'] if self.app.token else THEME['warning']
-        
-        self.user_lbl = ModernLabel(text=f"状态: {token_preview}", font_size=dp(12), color=status_color)
-        logout_btn = ModernGhostButton(text="退出登录", font_size=dp(12), height=dp(30))
-        logout_btn.bind(on_press=self.logout)
-        
-        user_info.add_widget(self.user_lbl)
-        user_info.add_widget(logout_btn)
-        sidebar.add_widget(self.nav_layout)
-        sidebar.add_widget(user_info)
-        
-        self.add_widget(sidebar)
-        
-        # 2. 右侧内容区 (包含ScreenManager和Log)
-        content_area = BoxLayout(orientation='vertical', padding=dp(0))
-        with content_area.canvas.before:
-            Color(*THEME['bg_dark'])
-            Rectangle(pos=content_area.pos, size=content_area.size)
-            
-        # Screen Manager
-        self.sm = ScreenManager(transition=FadeTransition(duration=0.2))
-        
-        # 初始化各个屏幕
-        self.sm.add_widget(ActionScreen(name='crawler', title="帖子爬虫工具", 
-            actions=[
-                ("批量爬取多页", self.on_batch_crawl),
-                ("爬取特定ID帖子", self.on_crawl_post),
-                ("爬取用户全部帖子", self.on_crawl_user),
-                ("查看已保存文件", self.on_user_files)
-            ], main_screen_ref=self))
-            
-        self.sm.add_widget(ActionScreen(name='search', title="全站搜索", 
-            actions=[
-                ("关键词搜索帖子", self.on_search_posts),
-                ("搜索用户 (ID/名称)", self.on_search_username)
-            ], main_screen_ref=self))
-            
-        self.sm.add_widget(ActionScreen(name='vote', title="投票任务", 
-            actions=[
-                ("单任务投票", self.on_single_vote),
-                ("批量任务投票", self.on_batch_vote),
-                ("查看投票记录", self.on_vote_files)
-            ], main_screen_ref=self))
+        self.orientation = 'vertical'
 
-        self.sm.add_widget(ActionScreen(name='follow', title="关注管理", 
-            actions=[
-                ("查询关注列表", self.on_query_attention)
-            ], main_screen_ref=self))
-            
-        self.sm.add_widget(ActionScreen(name='account', title="账号设置", 
-            actions=[
-                ("查看所有账号", self.on_manage_accounts),
-                ("检查 Token 状态", self.on_token_status),
-                ("清除登录缓存", self.on_clear_login)
-            ], main_screen_ref=self))
-            
-        content_area.add_widget(self.sm)
-        
-        # 3. 底部日志区 (类似控制台)
-        log_panel = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(180))
-        
-        # 分割线
-        with log_panel.canvas.before:
-            Color(*THEME['divider'])
-            Rectangle(pos=log_panel.pos, size=(log_panel.width, dp(1)))
-            Color(*THEME['bg_sidebar'])
-            Rectangle(pos=log_panel.pos, size=log_panel.size)
-            
-        log_header = BoxLayout(size_hint_y=None, height=dp(30), padding=[dp(10), 0])
-        log_header.add_widget(ModernLabel(text="运行日志", font_size=dp(12), color=THEME['text_dim'], halign='left'))
-        
-        self.log_scroll = ScrollView()
-        self.log_label = Label(
-            text="[系统] 准备就绪...\n",
-            font_size=dp(12),
-            font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto',
-            color=THEME['text_main'],
-            size_hint_y=None,
-            halign='left',
-            valign='top',
-            padding=[dp(10), dp(10)]
-        )
-        self.log_label.bind(texture_size=self.log_label.setter('size'))
-        self.log_label.bind(width=lambda *x: setattr(self.log_label, 'text_size', (self.log_label.width, None)))
-        
-        self.log_scroll.add_widget(self.log_label)
-        log_panel.add_widget(log_header)
-        log_panel.add_widget(self.log_scroll)
-        
-        content_area.add_widget(log_panel)
-        self.add_widget(content_area)
-        
-        # 默认选中第一个
-        self.switch_content('crawler')
-        
-        # 日志缓冲
+        # 日志缓冲区（解决日志卡顿问题）
         self._log_buffer = []
-        self._log_schedule = None
+        self._log_update_scheduled = False
 
-    def switch_content(self, screen_name):
-        self.sm.current = screen_name
-        # 更新侧边栏状态
-        for name, btn in self.nav_btns.items():
-            btn.set_active(name == screen_name)
+        # 背景色
+        with self.canvas.before:
+            Color(*COLORS['bg'])
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self._update_bg, size=self._update_bg)
+
+        # 顶部状态栏
+        top_bar = BoxLayout(size_hint_y=None, height=dp(50), padding=[dp(10), dp(5)], spacing=dp(10))
+        with top_bar.canvas.before:
+            Color(*COLORS['card'])
+            self.top_rect = Rectangle(pos=top_bar.pos, size=top_bar.size)
+        top_bar.bind(pos=self._update_top, size=self._update_top)
+
+        # 根据登录状态显示不同信息
+        if app.token:
+            status_text = f'已登录: {app.token[:12]}...'
+            status_color = COLORS['text']
+        else:
+            status_text = '未登录 (部分功能不可用)'
+            status_color = COLORS['warning']
+
+        self.status_label = StyledLabel(
+            text=status_text,
+            size_hint_x=0.65,
+            font_size=dp(13),
+            color=status_color
+        )
+        logout_btn = StyledButton(
+            text='登录' if not app.token else '退出',
+            size_hint_x=0.35,
+            bg_color=COLORS['primary'] if not app.token else COLORS['error'],
+            on_press=self.logout
+        )
+        top_bar.add_widget(self.status_label)
+        top_bar.add_widget(logout_btn)
+        self.add_widget(top_bar)
+
+        # 标签页面板
+        self.tabs = TabbedPanel(
+            do_default_tab=False,
+            tab_width=dp(70),
+            tab_height=dp(40),
+            background_color=COLORS['bg']
+        )
+
+        self.tabs.add_widget(self.create_crawler_tab())
+        self.tabs.add_widget(self.create_search_tab())
+        self.tabs.add_widget(self.create_vote_tab())
+        self.tabs.add_widget(self.create_follow_tab())
+        self.tabs.add_widget(self.create_account_tab())
+
+        self.add_widget(self.tabs)
+
+        # 输出日志区（使用RecycleView高性能日志）
+        log_outer = BoxLayout(orientation='vertical', size_hint_y=0.38)
+
+        # 日志工具栏
+        log_toolbar = BoxLayout(size_hint_y=None, height=dp(36), spacing=dp(8), padding=[dp(5), dp(2)])
+        with log_toolbar.canvas.before:
+            Color(*COLORS['card'])
+            self._toolbar_rect = Rectangle(pos=log_toolbar.pos, size=log_toolbar.size)
+        log_toolbar.bind(pos=self._update_toolbar, size=self._update_toolbar)
+
+        log_title = StyledLabel(text='日志输出', size_hint_x=0.4, font_size=dp(13))
+        self.log_count_label = StyledLabel(text='0条', size_hint_x=0.2, font_size=dp(11), color=COLORS['text_dim'])
+
+        clear_btn = StyledButton(text='清空', size_hint_x=0.2, bg_color=COLORS['secondary'], on_press=self.clear_log)
+        expand_btn = StyledButton(text='展开', size_hint_x=0.2, bg_color=COLORS['secondary'], on_press=self.toggle_log_expand)
+        self.expand_btn = expand_btn
+
+        log_toolbar.add_widget(log_title)
+        log_toolbar.add_widget(self.log_count_label)
+        log_toolbar.add_widget(clear_btn)
+        log_toolbar.add_widget(expand_btn)
+        log_outer.add_widget(log_toolbar)
+
+        # RecycleView日志区
+        log_container = CardLayout(padding=dp(8))
+        self.log_rv = LogRecycleView()
+        with self.log_rv.canvas.before:
+            Color(*COLORS['card'])
+            self._log_bg = Rectangle(pos=self.log_rv.pos, size=self.log_rv.size)
+        self.log_rv.bind(pos=self._update_log_bg, size=self._update_log_bg)
+        log_container.add_widget(self.log_rv)
+        log_outer.add_widget(log_container)
+
+        self.add_widget(log_outer)
+        self.log_outer = log_outer
+        self._log_expanded = False
+
+    def _update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+
+    def _update_top(self, *args):
+        self.top_rect.pos = args[0].pos
+        self.top_rect.size = args[0].size
+
+    def _update_toolbar(self, *args):
+        self._toolbar_rect.pos = args[0].pos
+        self._toolbar_rect.size = args[0].size
+
+    def _update_log_bg(self, *args):
+        self._log_bg.pos = args[0].pos
+        self._log_bg.size = args[0].size
+
+    def clear_log(self, instance=None):
+        """清空日志"""
+        self.log_rv.clear_logs()
+        self.log_count_label.text = '0条'
+
+    def toggle_log_expand(self, instance=None):
+        """展开/收起日志区域"""
+        if self._log_expanded:
+            # 收起
+            self.log_outer.size_hint_y = 0.38
+            self.tabs.size_hint_y = 1
+            self.tabs.opacity = 1
+            self.tabs.disabled = False
+            self.expand_btn.text = '展开'
+            self._log_expanded = False
+        else:
+            # 展开（全屏日志）
+            self.log_outer.size_hint_y = 0.85
+            self.tabs.size_hint_y = 0.01
+            self.tabs.opacity = 0
+            self.tabs.disabled = True
+            self.expand_btn.text = '收起'
+            self._log_expanded = True
+
+    def _on_link_click(self, instance, ref):
+        """处理日志中的链接点击，在浏览器中打开"""
+        try:
+            import webbrowser
+            webbrowser.open(ref)
+        except Exception as e:
+            self.log(f'打开链接失败: {e}')
+
+    def _convert_urls_to_links(self, text):
+        """将文本中的URL转换为可点击的Kivy markup链接"""
+        import re
+        # 匹配HTTP/HTTPS链接
+        url_pattern = r'(https?://[^\s<>\[\]\"\']+)'
+
+        def replace_url(match):
+            url = match.group(1)
+            # 清理URL末尾可能的标点符号
+            while url and url[-1] in '.,;:!?)':
+                url = url[:-1]
+            # 使用Kivy的ref标记创建可点击链接，蓝色下划线显示
+            return f'[ref={url}][color=4fc3f7][u]{url}[/u][/color][/ref]'
+
+        return re.sub(url_pattern, replace_url, text)
+
+    def create_tab_content(self, buttons):
+        """创建标签页内容"""
+        layout = GridLayout(cols=2, spacing=dp(12), padding=dp(15), size_hint_y=None)
+        layout.bind(minimum_height=layout.setter('height'))
+
+        for text, callback in buttons:
+            btn = StyledButton(
+                text=text,
+                size_hint_y=None,
+                height=dp(55),
+                on_press=callback
+            )
+            layout.add_widget(btn)
+
+        scroll = ScrollView()
+        scroll.add_widget(layout)
+        return scroll
+
+    def create_crawler_tab(self):
+        tab = TabbedPanelItem(text='帖子', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
+        buttons = [
+            ('批量搜索多页', self.on_batch_crawl),
+            ('搜索特定帖', self.on_crawl_post),
+            ('搜索用户全部', self.on_crawl_user),
+            ('用户文件', self.on_user_files),
+        ]
+        tab.add_widget(self.create_tab_content(buttons))
+        return tab
+
+    def create_search_tab(self):
+        tab = TabbedPanelItem(text='搜索', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
+        buttons = [
+            ('搜索帖子', self.on_search_posts),
+            ('用户名搜索', self.on_search_username),
+            ('用户ID搜索', self.on_search_userid),
+        ]
+        tab.add_widget(self.create_tab_content(buttons))
+        return tab
+
+    def create_vote_tab(self):
+        tab = TabbedPanelItem(text='投票', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
+        buttons = [
+            ('单任务投票', self.on_single_vote),
+            ('批量投票', self.on_batch_vote),
+            ('投票文件', self.on_vote_files),
+        ]
+        tab.add_widget(self.create_tab_content(buttons))
+        return tab
+
+    def create_follow_tab(self):
+        tab = TabbedPanelItem(text='关注', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
+        buttons = [
+            ('查询关注列表', self.on_query_attention),
+        ]
+        tab.add_widget(self.create_tab_content(buttons))
+        return tab
+
+    def create_account_tab(self):
+        tab = TabbedPanelItem(text='账号', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
+        buttons = [
+            ('切换账号', self.on_switch_account),
+            ('管理账号', self.on_manage_accounts),
+            ('Token状态', self.on_token_status),
+            ('清除登录', self.on_clear_login),
+        ]
+        tab.add_widget(self.create_tab_content(buttons))
+        return tab
+
+    # ========== 爬虫功能 ==========
+    def on_batch_crawl(self, instance):
+        dialog = InputDialog(
+            title='批量搜索',
+            fields=[
+                {"key": "start", "label": "开始页码", "default": "1"},
+                {"key": "pages", "label": "搜索页数", "default": "3"},
+            ],
+            callback=self._do_batch_crawl
+        )
+        dialog.open()
+
+    def _do_batch_crawl(self, values):
+        start = int(values.get("start", 1) or 1)
+        pages = int(values.get("pages", 3) or 3)
+        self.run_task(lambda: self.app.spider.crawl_and_save_posts(start_page=start, max_pages=pages))
+
+    def on_crawl_post(self, instance):
+        dialog = InputDialog(
+            title='搜索特定帖子',
+            fields=[{"key": "pid", "label": "帖子ID", "default": ""}],
+            callback=self._do_crawl_post
+        )
+        dialog.open()
+
+    def _do_crawl_post(self, values):
+        pid = int(values.get("pid", 0) or 0)
+        if pid:
+            self.run_task(lambda: self.app.spider.crawl_specific_post(pid))
+
+    def on_crawl_user(self, instance):
+        dialog = InputDialog(
+            title='搜索用户全部帖子',
+            fields=[{"key": "uid", "label": "用户ID", "default": ""}],
+            callback=self._do_crawl_user
+        )
+        dialog.open()
+
+    def _do_crawl_user(self, values):
+        uid = int(values.get("uid", 0) or 0)
+        if uid:
+            self.run_task(lambda: self.app.spider.crawl_user_posts(uid))
+
+    def on_user_files(self, instance):
+        self.run_task(lambda: self.app.spider.show_user_files())
+
+    # ========== 搜索功能 ==========
+    def on_search_posts(self, instance):
+        dialog = InputDialog(
+            title='搜索帖子',
+            fields=[
+                {"key": "keyword", "label": "关键词", "default": ""},
+                {"key": "pages", "label": "搜索页数", "default": "3"},
+            ],
+            callback=self._do_search_posts
+        )
+        dialog.open()
+
+    def _do_search_posts(self, values):
+        keyword = values.get("keyword", "")
+        pages = int(values.get("pages", 3) or 3)
+        if keyword:
+            self.run_task(lambda: self.app.spider.search_and_save_posts_gui(keyword, pages))
+
+    def on_search_username(self, instance):
+        dialog = InputDialog(
+            title='用户名搜索',
+            fields=[
+                {"key": "username", "label": "用户名", "default": ""},
+                {"key": "pages", "label": "搜索页数", "default": "30"},
+                {"key": "threads", "label": "线程数", "default": "8"},
+            ],
+            callback=self._do_search_username
+        )
+        dialog.open()
+
+    def _do_search_username(self, values):
+        username = values.get("username", "")
+        pages = int(values.get("pages", 30) or 30)
+        threads = int(values.get("threads", 8) or 8)
+        if username:
+            self.run_task(lambda: self.app.spider.search_username_gui(username, pages, threads))
+
+    def on_search_userid(self, instance):
+        dialog = InputDialog(
+            title='用户ID搜索',
+            fields=[
+                {"key": "user_id", "label": "用户ID", "default": ""},
+            ],
+            callback=self._do_search_userid
+        )
+        dialog.open()
+
+    def _do_search_userid(self, values):
+        user_id = values.get("user_id", "").strip()
+        if user_id and user_id.isdigit():
+            self.run_task(lambda: self.app.spider.search_userid_gui(int(user_id)))
+
+    # ========== 投票功能 ==========
+    def on_single_vote(self, instance):
+        dialog = InputDialog(
+            title='单任务投票',
+            fields=[{"key": "tid", "label": "任务ID", "default": ""}],
+            callback=self._do_single_vote
+        )
+        dialog.open()
+
+    def _do_single_vote(self, values):
+        tid = int(values.get("tid", 0) or 0)
+        if tid:
+            self.run_task(lambda: self.app.spider.vote_single_gui(tid))
+
+    def on_batch_vote(self, instance):
+        dialog = InputDialog(
+            title='批量投票',
+            fields=[
+                {"key": "start", "label": "起始ID", "default": "1"},
+                {"key": "end", "label": "结束ID", "default": "100"},
+                {"key": "threads", "label": "线程数", "default": "50"},
+            ],
+            callback=self._do_batch_vote
+        )
+        dialog.open()
+
+    def _do_batch_vote(self, values):
+        start = int(values.get("start", 1) or 1)
+        end = int(values.get("end", 100) or 100)
+        threads = int(values.get("threads", 50) or 50)
+        if start > end:
+            start, end = end, start
+        self.run_task(lambda: self.app.spider.batch_vote_gui(start, end, threads))
+
+    def on_vote_files(self, instance):
+        self.run_task(lambda: self.app.spider.show_vote_files())
+
+    # ========== 关注功能 ==========
+    def on_query_attention(self, instance):
+        dialog = InputDialog(
+            title='查询关注列表',
+            fields=[
+                {"key": "user_id", "label": "用户ID", "default": ""},
+                {"key": "page", "label": "页码", "default": "1"},
+            ],
+            callback=self._do_query_attention
+        )
+        dialog.open()
+
+    def _do_query_attention(self, values):
+        user_id = values.get("user_id", "").strip()
+        page = int(values.get("page", 1) or 1)
+        if user_id and user_id.isdigit():
+            self.run_task(lambda: self.app.spider.query_attention_gui(int(user_id), page))
+
+    # ========== 账号功能 ==========
+    def on_switch_account(self, instance):
+        self.app.show_login_screen()
+
+    def on_manage_accounts(self, instance):
+        try:
+            from app.your_code import load_accounts
+            accounts = load_accounts(self.app.spider)
+            if not accounts:
+                self.log('无保存账号')
+                return
+
+            info = '已保存账号:\n'
+            for i, acc in enumerate(accounts, 1):
+                info += f"{i}. {acc.get('昵称')} - {acc.get('最后登录')}\n"
+            self.log(info)
+        except Exception as e:
+            self.log(f'错误: {e}')
+
+    def on_token_status(self, instance):
+        try:
+            from app.your_code import check_token_status
+            self.run_task(lambda: check_token_status(self.app.spider, self.app.token))
+        except Exception as e:
+            self.log(f'错误: {e}')
+
+    def on_clear_login(self, instance):
+        self.app.spider.clear_login_state()
+        self.log('登录状态已清除')
 
     def logout(self, instance):
         self.app.token = None
-        self.app.switch_to_login()
+        self.app.show_login_screen()
 
-    def log(self, *args):
-        """线程安全的日志输出"""
-        msg = " ".join([str(a) for a in args])
-        self._log_buffer.append(msg)
-        if not self._log_schedule:
-            self._log_schedule = Clock.schedule_once(self._flush_log, 0.1)
-            
-    def _flush_log(self, dt):
-        if self._log_buffer:
-            new_text = "\n".join(self._log_buffer) + "\n"
-            self.log_label.text += new_text
-            # 保持日志不过长
-            if len(self.log_label.text) > 20000:
-                self.log_label.text = self.log_label.text[-15000:]
-            self.log_scroll.scroll_to(self.log_label)
-            self._log_buffer = []
-        self._log_schedule = None
-
-    def run_bg(self, func):
-        """后台运行任务"""
-        if not self.app.token:
-            self.log("❌ 错误：请先登录")
+    # ========== 工具方法 ==========
+    def run_task(self, func, require_login=True):
+        """在后台线程运行任务"""
+        # 检查是否需要登录
+        if require_login and not self.app.token:
+            self.log('此功能需要登录，请先登录账号')
             return
 
         def wrapper():
-            # 劫持 print 到日志
             import builtins
             old_print = builtins.print
             builtins.print = self.log
             try:
                 func()
             except Exception as e:
-                self.log(f"❌ 运行错误: {e}")
+                self.log(f'错误: {e}')
             finally:
                 builtins.print = old_print
-        
+
         threading.Thread(target=wrapper, daemon=True).start()
 
-    # ---------- 业务逻辑绑定 ----------
-    # 爬虫
-    def on_batch_crawl(self, instance):
-        InputDialog("批量爬取", 
-            [{"key":"start","label":"开始页","default":"1"},{"key":"pages","label":"页数","default":"3"}], 
-            lambda v: self.run_bg(lambda: self.app.spider.crawl_and_save_posts(int(v['start']), int(v['pages'])))
-        ).open()
+    @mainthread
+    def log(self, *args, **kwargs):
+        """日志输出 - 使用缓冲区批量更新，避免UI卡顿"""
+        text = ' '.join(str(a) for a in args)
+        self._log_buffer.append(text)
 
-    def on_crawl_post(self, instance):
-        InputDialog("爬取帖子", [{"key":"id","label":"帖子ID","default":""}], 
-            lambda v: self.run_bg(lambda: self.app.spider.crawl_specific_post(int(v['id']))) if v['id'] else None
-        ).open()
-        
-    def on_crawl_user(self, instance):
-        InputDialog("爬取用户", [{"key":"id","label":"用户ID","default":""},{"key":"pages","label":"页数","default":"10"}],
-            lambda v: self.run_bg(lambda: self.app.spider.crawl_user_posts_gui(int(v['id']), int(v['pages']))) if v['id'] else None
-        ).open()
+        # 安排批量更新，避免频繁刷新UI
+        if not self._log_update_scheduled:
+            self._log_update_scheduled = True
+            Clock.schedule_once(self._flush_log_buffer, 0.1)
 
-    def on_user_files(self, instance):
-        self.run_bg(lambda: self.app.spider.show_user_files())
+    def _get_log_color(self, text):
+        """根据日志内容判断颜色"""
+        text_lower = text.lower()
+        # 成功 - 绿色
+        if any(kw in text for kw in ['成功', '完成', '保存', 'OK', '✅']):
+            return COLORS['success']
+        # 错误 - 红色
+        if any(kw in text for kw in ['错误', '失败', 'Error', 'error', '❌', '异常']):
+            return COLORS['error']
+        # 警告 - 黄色
+        if any(kw in text for kw in ['警告', '注意', 'Warning', 'warning', '⚠']):
+            return COLORS['warning']
+        # 普通 - 白色
+        return COLORS['text']
 
-    # 搜索
-    def on_search_posts(self, instance):
-        InputDialog("搜索帖子", [{"key":"kw","label":"关键词","default":""},{"key":"pg","label":"页数","default":"3"}], 
-            lambda v: self.run_bg(lambda: self.app.spider.search_and_save_posts_gui(v['kw'], int(v['pg']))) if v['kw'] else None
-        ).open()
+    def _flush_log_buffer(self, dt=None):
+        """刷新日志缓冲区到UI"""
+        self._log_update_scheduled = False
+        if not self._log_buffer:
+            return
 
-    def on_search_username(self, instance):
-        InputDialog("搜索用户", 
-            [{"key":"kw","label":"用户名","default":""},{"key":"pg","label":"页数","default":"30"},{"key":"th","label":"线程","default":"8"}], 
-            lambda v: self.run_bg(lambda: self.app.spider.search_username_gui(v['kw'], int(v['pg']), int(v['th']))) if v['kw'] else None
-        ).open()
+        # 逐条添加日志
+        for text in self._log_buffer:
+            # 转换URL为可点击链接
+            display_text = self._convert_urls_to_links(text)
+            color = self._get_log_color(text)
+            self.log_rv.add_log(display_text, color)
 
-    # 投票
-    def on_single_vote(self, instance):
-        InputDialog("单任务投票", [{"key":"id","label":"任务ID","default":""}], 
-            lambda v: self.run_bg(lambda: self.app.spider.vote_single_gui(int(v['id']))) if v['id'] else None
-        ).open()
+        self._log_buffer.clear()
 
-    def on_batch_vote(self, instance):
-        InputDialog("批量投票", 
-            [{"key":"s","label":"起始ID","default":"1"},{"key":"e","label":"结束ID","default":"100"},{"key":"t","label":"线程","default":"50"}], 
-            lambda v: self.run_bg(lambda: self.app.spider.batch_vote_gui(int(v['s']), int(v['e']), int(v['t'])))
-        ).open()
-        
-    def on_vote_files(self, instance):
-        self.run_bg(lambda: self.app.spider.show_vote_files())
+        # 更新日志条数
+        self.log_count_label.text = f'{len(self.log_rv.data)}条'
 
-    # 关注
-    def on_query_attention(self, instance):
-        InputDialog("查询关注", [{"key":"id","label":"用户ID","default":""},{"key":"p","label":"页码","default":"1"}], 
-            lambda v: self.run_bg(lambda: self.app.spider.query_attention_gui(int(v['id']), int(v['p']))) if v['id'] else None
-        ).open()
-
-    # 账号
-    def on_manage_accounts(self, instance):
-        try:
-            try: from your_code import load_accounts
-            except: from app.your_code import load_accounts
-            accs = load_accounts(self.app.spider)
-            msg = "已保存账号:\n" + "\n".join([f"{i+1}. {a.get('昵称')} ({a.get('最后登录')})" for i,a in enumerate(accs)])
-            self.log(msg)
-        except Exception as e: self.log(str(e))
-
-    def on_token_status(self, instance):
-        try:
-            try: from your_code import check_token_status
-            except: from app.your_code import check_token_status
-            self.run_bg(lambda: check_token_status(self.app.spider, self.app.token))
-        except: pass
-
-    def on_clear_login(self, instance):
-        self.app.spider.clear_login_state()
-        self.log("✅ 登录状态已清除")
-
-# ---------- App 入口 ----------
 
 class BDSMApp(App):
-    def build(self):
-        self.title = 'BDSM 论坛工具 Pro'
-        self.icon = '' # 可以在这里添加图标路径
-        Window.clearcolor = THEME['bg_dark']
-
-        # 在 Android 上先请求权限
-        self._request_permissions_on_start()
-
-        self.root_widget = BoxLayout()
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.spider = None
         self.token = None
+        self.root_widget = None
 
-        # 显示加载界面
-        self.show_loading()
+    def build(self):
+        self.title = 'BDSM 论坛工具'
+        Window.clearcolor = COLORS['bg']
 
-        # 异步初始化
-        Clock.schedule_once(self.init_backend, 0.5)
+        self.root_widget = BoxLayout()
+
+        # 延迟初始化 spider 和显示登录界面
+        Clock.schedule_once(self.init_app, 0.5)
+
+        # 先显示加载画面
+        loading = BoxLayout(orientation='vertical')
+        with loading.canvas.before:
+            Color(*COLORS['bg'])
+            Rectangle(pos=(0, 0), size=Window.size)
+        loading.add_widget(StyledLabel(
+            text='加载中...',
+            font_size=dp(20)
+        ))
+        self.root_widget.add_widget(loading)
 
         return self.root_widget
 
-    def _request_permissions_on_start(self):
-        """应用启动时请求所有存储权限（覆盖所有Android版本）"""
+    def init_app(self, dt):
+        """延迟初始化"""
         try:
-            from kivy.utils import platform
-            if platform != 'android':
-                return
+            from app.your_code import BDSMForumSpider, test_token_valid
 
-            from android.permissions import request_permissions, Permission
-            import android
-
-            # 获取Android SDK版本
-            sdk_version = int(android.api_version)
-            print(f"Android SDK版本: {sdk_version}")
-
-            permissions_to_request = []
-
-            # Android 13+ (API 33+) 需要细分的媒体权限
-            if sdk_version >= 33:
-                permissions_to_request.extend([
-                    Permission.READ_MEDIA_IMAGES,
-                    Permission.READ_MEDIA_VIDEO,
-                    Permission.READ_MEDIA_AUDIO,
-                ])
-
-            # Android 11+ (API 30+) 需要 MANAGE_EXTERNAL_STORAGE
-            if sdk_version >= 30:
-                try:
-                    from android import mActivity
-                    from jnius import autoclass
-
-                    Environment = autoclass('android.os.Environment')
-                    if not Environment.isExternalStorageManager():
-                        Intent = autoclass('android.content.Intent')
-                        Settings = autoclass('android.provider.Settings')
-                        Uri = autoclass('android.net.Uri')
-
-                        intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                        uri = Uri.parse("package:" + mActivity.getPackageName())
-                        intent.setData(uri)
-                        mActivity.startActivity(intent)
-                except Exception as e:
-                    print(f"请求MANAGE_EXTERNAL_STORAGE失败: {e}")
-
-            # Android 6-12 (API 23-32) 使用传统存储权限
-            permissions_to_request.extend([
-                Permission.WRITE_EXTERNAL_STORAGE,
-                Permission.READ_EXTERNAL_STORAGE,
-            ])
-
-            if permissions_to_request:
-                print(f"请求权限: {permissions_to_request}")
-                request_permissions(permissions_to_request)
-
-        except ImportError as e:
-            print(f"导入android模块失败: {e}")
-        except Exception as e:
-            print(f"请求权限失败: {e}")
-
-    def show_loading(self):
-        self.root_widget.clear_widgets()
-        layout = AnchorLayout()
-        lbl = ModernLabel(text="正在初始化核心组件...", font_size=dp(16), color=THEME['text_dim'])
-        layout.add_widget(lbl)
-        self.root_widget.add_widget(layout)
-
-    def init_backend(self, dt):
-        try:
-            # 兼容导入
-            try:
-                from your_code import BDSMForumSpider
-            except ImportError:
-                from app.your_code import BDSMForumSpider
-
-            # 获取数据目录
+            # 确定数据保存目录
             data_dir = self._get_data_dir()
-
             self.spider = BDSMForumSpider(data_dir=data_dir)
-            print(f"数据目录: {data_dir}")
+            print(f"数据保存目录: {data_dir}")
 
-            # 自动登录检查
+            # 尝试自动登录
             auto_token = self.spider.load_login_state()
             if auto_token:
-                threading.Thread(target=self._check_auto_login, args=(auto_token,), daemon=True).start()
+                # 在后台线程验证 token
+                threading.Thread(target=self._try_auto_login, args=(auto_token,), daemon=True).start()
             else:
-                self.switch_to_login()
-
+                self.show_login_screen()
         except Exception as e:
-            self.switch_to_login(error_msg=f"初始化失败: {e}")
+            print(f"初始化失败: {e}")
+            # 即使失败也要创建 spider，避免 None 错误
+            try:
+                from app.your_code import BDSMForumSpider
+                data_dir = self._get_data_dir()
+                self.spider = BDSMForumSpider(data_dir=data_dir)
+            except:
+                pass
+            self.show_login_screen(error_msg=f"初始化错误: {e}")
 
     def _get_data_dir(self):
         """获取数据保存目录，Android上使用 /sdcard/bdsm数据/"""
         try:
             from kivy.utils import platform
             if platform == 'android':
+                # 尝试申请存储权限
+                self._request_android_permissions()
                 # 使用外部存储目录
                 sdcard_dir = "/sdcard/bdsm数据"
                 try:
@@ -977,36 +1156,54 @@ class BDSMApp(App):
                     return os.path.join(self.user_data_dir, "bdsm_data")
             else:
                 # 非Android平台使用应用数据目录
-                data_dir = os.path.join(self.user_data_dir, "bdsm_data")
-                os.makedirs(data_dir, exist_ok=True)
-                return data_dir
+                return os.path.join(self.user_data_dir, "bdsm_data")
         except Exception as e:
             print(f"获取数据目录失败: {e}")
             return os.path.join(self.user_data_dir, "bdsm_data")
 
-    def _check_auto_login(self, token):
+    def _request_android_permissions(self):
+        """申请Android存储权限"""
         try:
-            try: from your_code import test_token_valid
-            except: from app.your_code import test_token_valid
-            
+            from android.permissions import request_permissions, Permission, check_permission
+
+            # 检查是否已有权限
+            if not check_permission(Permission.WRITE_EXTERNAL_STORAGE):
+                print("申请存储权限...")
+                request_permissions([
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_EXTERNAL_STORAGE
+                ])
+                # 等待权限结果
+                import time
+                time.sleep(1)
+        except ImportError:
+            # 非Android平台或没有android模块
+            pass
+        except Exception as e:
+            print(f"申请权限失败: {e}")
+
+    def _try_auto_login(self, token):
+        try:
+            from app.your_code import test_token_valid
             if test_token_valid(self.spider, token):
-                self.token = token
                 self.spider.set_token(token)
-                Clock.schedule_once(lambda dt: self.switch_to_main(), 0)
+                self.token = token
+                Clock.schedule_once(lambda dt: self.show_main_screen(), 0)
             else:
-                Clock.schedule_once(lambda dt: self.switch_to_login(), 0)
+                Clock.schedule_once(lambda dt: self.show_login_screen(), 0)
         except:
-            Clock.schedule_once(lambda dt: self.switch_to_login(), 0)
+            Clock.schedule_once(lambda dt: self.show_login_screen(), 0)
 
     @mainthread
-    def switch_to_login(self, error_msg=None):
+    def show_login_screen(self, error_msg=None):
         self.root_widget.clear_widgets()
         self.root_widget.add_widget(LoginScreen(self, error_msg=error_msg))
 
     @mainthread
-    def switch_to_main(self):
+    def show_main_screen(self):
         self.root_widget.clear_widgets()
         self.root_widget.add_widget(MainScreen(self))
+
 
 if __name__ == '__main__':
     BDSMApp().run()

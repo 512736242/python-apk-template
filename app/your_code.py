@@ -2816,6 +2816,29 @@ class BDSMForumSpider:
 
         return found_users
 
+    def search_userid_gui(self, user_id: int):
+        """GUI版本的用户ID搜索功能（无需交互输入）"""
+        print(f"\n搜索用户ID: {user_id}")
+        print("=" * 60)
+
+        # 获取用户完整信息
+        user_info = self.get_complete_user_info(user_id)
+
+        if user_info:
+            print(f"\n用户: {user_info['name']} (ID:{user_info['id']})")
+            self.display_complete_user_info(user_info, prefix="   ")
+
+            # 直接保存到搜索目录
+            print(f"\n正在保存用户信息到搜索目录...")
+            if self.save_user_info_to_search_dir(user_info):
+                print(f"用户信息已保存到搜索目录: {self.search_dir}/")
+
+            # 生成用户主页链接
+            user_url = f"https://dun.sdo.com/#/user/{user_id}"
+            print(f"\n用户主页: {user_url}")
+        else:
+            print(f"未找到用户ID: {user_id}")
+
     def batch_vote_gui(self, start_id, end_id, threads=50):
         """GUI版本的批量投票功能（无需交互输入）"""
         print(f"\n🚀 批量投票: ID {start_id} 到 {end_id}")
