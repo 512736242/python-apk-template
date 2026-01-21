@@ -28,13 +28,53 @@ from kivy.utils import get_color_from_hex
 from functools import partial
 
 # 注册中文字体
-FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
-FONT_PATH = os.path.join(FONT_DIR, 'NotoSansSC-Regular.ttf')
-if os.path.exists(FONT_PATH):
-    LabelBase.register(name='NotoSansSC', fn_regular=FONT_PATH)
-    DEFAULT_FONT = 'NotoSansSC'
-else:
+DEFAULT_FONT = None
+
+def init_chinese_font():
+    """初始化中文字体，尝试多个来源"""
+    global DEFAULT_FONT
+
+    # 1. 尝试项目内的字体文件
+    font_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+    # 尝试多个可能的字体文件名
+    font_names = [
+        'NotoSansSC-Regular.ttf',
+        'NotoSansSC-VariableFont_wght.ttf',
+        'NotoSansSC.ttf',
+    ]
+    for fname in font_names:
+        font_path = os.path.join(font_dir, fname)
+        if os.path.exists(font_path):
+            try:
+                LabelBase.register(name='NotoSansSC', fn_regular=font_path)
+                DEFAULT_FONT = 'NotoSansSC'
+                print(f"使用项目字体: {font_path}")
+                return
+            except Exception as e:
+                print(f"加载项目字体失败: {e}")
+
+    # 2. 尝试 Android 系统中文字体
+    android_fonts = [
+        '/system/fonts/NotoSansCJK-Regular.ttc',
+        '/system/fonts/NotoSansSC-Regular.otf',
+        '/system/fonts/DroidSansFallback.ttf',
+        '/system/fonts/NotoSansHans-Regular.otf',
+    ]
+    for afont in android_fonts:
+        if os.path.exists(afont):
+            try:
+                LabelBase.register(name='ChineseFont', fn_regular=afont)
+                DEFAULT_FONT = 'ChineseFont'
+                print(f"使用系统字体: {afont}")
+                return
+            except Exception as e:
+                print(f"加载系统字体 {afont} 失败: {e}")
+
+    # 3. 使用 Roboto 作为最后备选（可能不支持中文）
+    print("警告: 未找到中文字体，部分中文可能显示为方块")
     DEFAULT_FONT = None
+
+init_chinese_font()
 
 # 颜色主题
 COLORS = {
@@ -589,7 +629,7 @@ class MainScreen(BoxLayout):
         return scroll
 
     def create_crawler_tab(self):
-        tab = TabbedPanelItem(text='爬虫', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
+        tab = TabbedPanelItem(text='帖子', font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto')
         buttons = [
             ('批量搜索多页', self.on_batch_crawl),
             ('搜索特定帖', self.on_crawl_post),
@@ -732,7 +772,7 @@ class MainScreen(BoxLayout):
     def _do_single_vote(self, values):
         tid = int(values.get("tid", 0) or 0)
         if tid:
-            self.run_task(lambda: self.app.spider.vote_single_test(tid))
+            self.run_task(lambda: self.app.spider.vote_single_gui(tid))
 
     def on_batch_vote(self, instance):
         dialog = InputDialog(
@@ -897,8 +937,8 @@ class BDSMApp(App):
         try:
             from app.your_code import BDSMForumSpider, test_token_valid
 
-            # 使用应用的用户数据目录（在Android上可写）
-            data_dir = os.path.join(self.user_data_dir, "bdsm_data")
+            # 确定数据保存目录
+            data_dir = self._get_data_dir()
             self.spider = BDSMForumSpider(data_dir=data_dir)
             print(f"数据保存目录: {data_dir}")
 
@@ -914,11 +954,60 @@ class BDSMApp(App):
             # 即使失败也要创建 spider，避免 None 错误
             try:
                 from app.your_code import BDSMForumSpider
-                data_dir = os.path.join(self.user_data_dir, "bdsm_data")
+                data_dir = self._get_data_dir()
                 self.spider = BDSMForumSpider(data_dir=data_dir)
             except:
                 pass
             self.show_login_screen(error_msg=f"初始化错误: {e}")
+
+    def _get_data_dir(self):
+        """获取数据保存目录，Android上使用 /sdcard/bdsm数据/"""
+        try:
+            from kivy.utils import platform
+            if platform == 'android':
+                # 尝试申请存储权限
+                self._request_android_permissions()
+                # 使用外部存储目录
+                sdcard_dir = "/sdcard/bdsm数据"
+                try:
+                    os.makedirs(sdcard_dir, exist_ok=True)
+                    # 测试是否可写
+                    test_file = os.path.join(sdcard_dir, ".test_write")
+                    with open(test_file, 'w') as f:
+                        f.write("test")
+                    os.remove(test_file)
+                    print(f"使用外部存储: {sdcard_dir}")
+                    return sdcard_dir
+                except Exception as e:
+                    print(f"外部存储不可用: {e}，使用应用内目录")
+                    return os.path.join(self.user_data_dir, "bdsm_data")
+            else:
+                # 非Android平台使用应用数据目录
+                return os.path.join(self.user_data_dir, "bdsm_data")
+        except Exception as e:
+            print(f"获取数据目录失败: {e}")
+            return os.path.join(self.user_data_dir, "bdsm_data")
+
+    def _request_android_permissions(self):
+        """申请Android存储权限"""
+        try:
+            from android.permissions import request_permissions, Permission, check_permission
+
+            # 检查是否已有权限
+            if not check_permission(Permission.WRITE_EXTERNAL_STORAGE):
+                print("申请存储权限...")
+                request_permissions([
+                    Permission.WRITE_EXTERNAL_STORAGE,
+                    Permission.READ_EXTERNAL_STORAGE
+                ])
+                # 等待权限结果
+                import time
+                time.sleep(1)
+        except ImportError:
+            # 非Android平台或没有android模块
+            pass
+        except Exception as e:
+            print(f"申请权限失败: {e}")
 
     def _try_auto_login(self, token):
         try:

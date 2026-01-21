@@ -18,7 +18,7 @@ version = 2.0.0
 requirements = python3,kivy,requests,urllib3,certifi,charset-normalizer,idna
 
 # Android 配置
-android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
 android.api = 33
 android.minapi = 21
 android.ndk = 25b

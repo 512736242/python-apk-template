@@ -2004,9 +2004,60 @@ class BDSMForumSpider:
                             f"{vote_status} (code={vote_code}, msg={vote_msg})")
         else:
             saver.save_record(f"投票任务{task_id}", "⏹️", "用户取消投票")
-        
+
         saver.finalize(1 if valid else 0, 0, 1, 0)
         print(f"📋 投票测试记录已保存: {saver.filepath}")
+
+    def vote_single_gui(self, task_id: int):
+        """GUI版本的单次投票功能（无需交互输入，显示原始JSON响应）"""
+        print(f"\n🗳️ 单任务投票: {task_id}")
+        print("=" * 60)
+
+        # 1. 先检查任务状态
+        print(f"📋 检查任务 {task_id} 状态...")
+        url_check = f"{self.base_url}/api.php/play/pds"
+        try:
+            r_check = requests.post(url_check, headers=self.headers, json={"id": str(task_id)}, timeout=5)
+            if r_check.status_code == 200:
+                check_data = r_check.json()
+                print(f"\n📄 检查响应 (原始JSON):")
+                print(json.dumps(check_data, ensure_ascii=False, indent=2))
+
+                if check_data.get("code") != 1:
+                    print(f"\n❌ 任务无效: {check_data.get('msg', '未知错误')}")
+                    return
+                print(f"\n✅ 任务有效，开始投票...")
+            else:
+                print(f"❌ 检查请求失败: HTTP {r_check.status_code}")
+                return
+        except Exception as e:
+            print(f"❌ 检查请求异常: {e}")
+            return
+
+        # 2. 执行投票
+        url_vote = f"{self.base_url}/api.php/play/pd_do"
+        try:
+            r_vote = requests.post(url_vote, headers=self.headers, json={"id": task_id, "type": 1}, timeout=5)
+            if r_vote.status_code == 200:
+                vote_data = r_vote.json()
+                print(f"\n📄 投票响应 (原始JSON):")
+                print(json.dumps(vote_data, ensure_ascii=False, indent=2))
+
+                code = vote_data.get("code")
+                msg = vote_data.get("msg", "")
+
+                if code == 1:
+                    print(f"\n✅ 投票成功: {msg}")
+                elif code == 0 and ("已投" in msg or "重复" in msg or "投过" in msg):
+                    print(f"\n🔄 已投过票: {msg}")
+                else:
+                    print(f"\n❌ 投票失败: {msg}")
+            else:
+                print(f"❌ 投票请求失败: HTTP {r_vote.status_code}")
+        except Exception as e:
+            print(f"❌ 投票请求异常: {e}")
+
+        print("=" * 60)
 
     def batch_vote(self):
         print("\n" + "="*60)
@@ -2624,9 +2675,13 @@ class BDSMForumSpider:
             print(f"✅ 第 {page} 页找到 {len(posts)} 个相关帖子")
             all_posts.extend(posts)
 
-            # 自动保存
+            # 显示并自动保存
             page_saved = 0
-            for post in posts:
+            for idx, post in enumerate(posts, 1):
+                # 显示帖子内容
+                post_index = len(all_posts) - len(posts) + idx
+                self.display_post_for_browsing(post, post_index)
+
                 user_info = post.get("user", {})
                 user_id = user_info.get("id") or post.get("user_id")
                 if user_id:
