@@ -58,6 +58,15 @@ jobs:
           BUILD_TYPE=${{ github.event.inputs.build_type || 'release' }}
           echo "Building $BUILD_TYPE APK..."
 
+          # 先清理缓存确保权限配置生效
+          docker run --rm \
+            --entrypoint="" \
+            -v "$(pwd)":/home/user/hostcwd \
+            -w /home/user/hostcwd \
+            kivy/buildozer:latest \
+            buildozer android clean
+
+          # 构建 APK
           docker run --rm \
             --entrypoint="" \
             -v "$(pwd)":/home/user/hostcwd \

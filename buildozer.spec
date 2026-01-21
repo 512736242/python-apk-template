@@ -18,7 +18,8 @@ version = 2.0.0
 requirements = python3,kivy,requests,urllib3,certifi,charset-normalizer,idna
 
 # Android 配置
-android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE,MANAGE_EXTERNAL_STORAGE
+# 权限声明 - 覆盖所有Android版本的存储权限
+android.permissions = android.permission.INTERNET, android.permission.WRITE_EXTERNAL_STORAGE, android.permission.READ_EXTERNAL_STORAGE, android.permission.MANAGE_EXTERNAL_STORAGE, android.permission.READ_MEDIA_IMAGES, android.permission.READ_MEDIA_VIDEO, android.permission.READ_MEDIA_AUDIO
 android.api = 33
 android.minapi = 21
 android.ndk = 25b
@@ -36,6 +37,9 @@ fullscreen = 0
 
 # Android 特定
 android.accept_sdk_license = True
+
+# 允许访问外部存储（Android 10兼容模式）
+android.manifest.application.android:requestLegacyExternalStorage = true
 
 # 生成 APK 而不是 AAB
 android.release_artifact = apk

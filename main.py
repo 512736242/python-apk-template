@@ -940,21 +940,62 @@ class BDSMApp(App):
         return self.root_widget
 
     def _request_permissions_on_start(self):
-        """应用启动时请求权限"""
+        """应用启动时请求所有存储权限（覆盖所有Android版本）"""
         try:
             from kivy.utils import platform
             if platform != 'android':
                 return
 
             from android.permissions import request_permissions, Permission
+            import android
 
-            # 请求存储权限
-            request_permissions([
+            # 获取Android SDK版本
+            sdk_version = int(android.api_version)
+            print(f"Android SDK版本: {sdk_version}")
+
+            permissions_to_request = []
+
+            # Android 13+ (API 33+) 需要细分的媒体权限
+            if sdk_version >= 33:
+                permissions_to_request.extend([
+                    Permission.READ_MEDIA_IMAGES,
+                    Permission.READ_MEDIA_VIDEO,
+                    Permission.READ_MEDIA_AUDIO,
+                ])
+
+            # Android 11+ (API 30+) 需要 MANAGE_EXTERNAL_STORAGE
+            if sdk_version >= 30:
+                # MANAGE_EXTERNAL_STORAGE 需要特殊处理，跳转设置页面
+                try:
+                    from android import mActivity
+                    from jnius import autoclass
+
+                    Environment = autoclass('android.os.Environment')
+                    if not Environment.isExternalStorageManager():
+                        Intent = autoclass('android.content.Intent')
+                        Settings = autoclass('android.provider.Settings')
+                        Uri = autoclass('android.net.Uri')
+
+                        intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                        uri = Uri.parse("package:" + mActivity.getPackageName())
+                        intent.setData(uri)
+                        mActivity.startActivity(intent)
+                except Exception as e:
+                    print(f"请求MANAGE_EXTERNAL_STORAGE失败: {e}")
+
+            # Android 6-12 (API 23-32) 使用传统存储权限
+            permissions_to_request.extend([
                 Permission.WRITE_EXTERNAL_STORAGE,
                 Permission.READ_EXTERNAL_STORAGE,
             ])
-        except ImportError:
-            pass
+
+            # 请求权限
+            if permissions_to_request:
+                print(f"请求权限: {permissions_to_request}")
+                request_permissions(permissions_to_request)
+
+        except ImportError as e:
+            print(f"导入android模块失败: {e}")
         except Exception as e:
             print(f"请求权限失败: {e}")
 
