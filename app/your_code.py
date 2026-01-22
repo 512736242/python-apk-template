@@ -2650,6 +2650,38 @@ class BDSMForumSpider:
                 break
 
     # ========== GUI 适配方法 ==========
+    def crawl_specific_post_gui(self, post_id: int):
+        """GUI版本的爬取特定帖子（自动保存，无需交互）"""
+        print(f"\n爬取特定帖子: {post_id}")
+        print("=" * 50)
+
+        detail = self.get_post_detail(post_id)
+
+        if not detail:
+            print(f"未找到帖子 {post_id}")
+            return
+
+        # 显示帖子详情
+        print(f"\n帖子详情:")
+        self.display_post_for_browsing(detail, index=1)
+
+        # 获取用户信息并保存
+        user_info = detail.get("user", {})
+        user_id = user_info.get("id") or detail.get("user_id")
+
+        if user_id:
+            complete_user_info = self.get_complete_user_info(user_id)
+            if complete_user_info:
+                save_success = self.save_post_for_user_crawl(detail, complete_user_info, manual_mode=True, index=1)
+                if save_success:
+                    print(f"\n帖子 {post_id} 已保存到 {self.users_dir}/")
+                else:
+                    print(f"\n帖子 {post_id} 保存失败")
+            else:
+                print(f"无法获取用户 {user_id} 的完整信息")
+        else:
+            print(f"无法获取用户ID")
+
     def crawl_user_posts_gui(self, user_id: int, max_pages: int = 10):
         """GUI版本的爬取用户帖子功能（无需交互输入）"""
         print(f"\n[爬取用户帖子] 用户ID: {user_id}")

@@ -162,6 +162,7 @@ class LogDetailPopup(Popup):
         super().__init__(**kwargs)
         self.title = '日志详情'
         self.title_color = COLORS['text']
+        self.title_font = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
         self.size_hint = (0.95, 0.8)
         self.background_color = COLORS['card']
         self.separator_color = COLORS['primary']
@@ -250,6 +251,7 @@ class InputDialog(Popup):
         self.title = title
         self.title_color = COLORS['text']
         self.title_size = dp(18)
+        self.title_font = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
         self.separator_color = COLORS['primary']
         self.size_hint = (0.85, None)
         self.height = dp(80 + 60 * len(fields) + 70)
@@ -869,20 +871,24 @@ class MainScreen(BoxLayout):
     def _do_crawl_post(self, values):
         pid = int(values.get("pid", 0) or 0)
         if pid:
-            self.run_task(lambda: self.app.spider.crawl_specific_post(pid))
+            self.run_task(lambda: self.app.spider.crawl_specific_post_gui(pid))
 
     def on_crawl_user(self, instance):
         dialog = InputDialog(
             title='搜索用户全部帖子',
-            fields=[{"key": "uid", "label": "用户ID", "default": ""}],
+            fields=[
+                {"key": "uid", "label": "用户ID", "default": ""},
+                {"key": "pages", "label": "搜索页数", "default": "10"},
+            ],
             callback=self._do_crawl_user
         )
         dialog.open()
 
     def _do_crawl_user(self, values):
         uid = int(values.get("uid", 0) or 0)
+        pages = int(values.get("pages", 10) or 10)
         if uid:
-            self.run_task(lambda: self.app.spider.crawl_user_posts(uid))
+            self.run_task(lambda: self.app.spider.crawl_user_posts_gui(uid, pages))
 
     def on_user_files(self, instance):
         self.run_task(lambda: self.app.spider.show_user_files())
