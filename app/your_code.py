@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-BDSM 论坛爬虫 / 投票 / 账号管理 / 关注查询 一体工具
-已验证接口：circle/show 获取帖子详情
-新增功能：用户名搜索、用户ID搜索、记住登录状态、搜索翻页、统一保存机制、关注列表查询
-新增：自定义数据保存目录，带中文注释的JSON输出
-统一用户信息展示：身高、体重、生日、性别、性取向、角色、用户ID、用户名、最后在线时间
-"""
+
 import requests
 import json
 import time
@@ -18,25 +12,17 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import urllib3
 
-# 禁用SSL警告
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ---------- 通用正则 ----------
 INVALID_CHARS = re.compile(r'[<>:\"/|?*]')
-
-# ---------- 登录状态文件 ----------
 LOGIN_STATE_FILE = "login_state.json"
 
-# ---------- 结果保存器基类 ----------
 class ResultSaver:
-    """通用的结果保存器"""
     def __init__(self, save_dir, filename_prefix, start_info="", end_info=""):
-        # 确保目录存在
         os.makedirs(save_dir, exist_ok=True)
         
         self.save_dir = save_dir
         
-        # 生成文件名
         timestamp = time.strftime("%Y%m%d_%H%M%S")
         if start_info and end_info:
             self.filename = f"{filename_prefix}_{start_info}到{end_info}_{timestamp}.txt"
@@ -47,7 +33,6 @@ class ResultSaver:
         self._write_header(start_info, end_info)
     
     def _write_header(self, start_info, end_info):
-        """写入文件头"""
         with open(self.filepath, 'w', encoding='utf-8') as f:
             f.write("="*70 + "\n")
             f.write("                   任务结果报告\n")
@@ -63,16 +48,14 @@ class ResultSaver:
             f.write("-"*70 + "\n")
     
     def save_record(self, task_id, status, details):
-        """保存单条记录"""
         try:
             with open(self.filepath, 'a', encoding='utf-8') as f:
                 timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
                 f.write(f"{timestamp}  {str(task_id):12s}   {status:8s} | {details}\n")
         except Exception as e:
-            print(f"❌ 保存记录失败: {e}")
+            print(f"保存记录失败: {e}")
     
     def finalize(self, success, failed, total, elapsed, extra_stats=None):
-        """完成文件保存"""
         try:
             with open(self.filepath, 'a', encoding='utf-8') as f:
                 f.write("="*70 + "\n\n")
@@ -94,11 +77,9 @@ class ResultSaver:
                 f.write(f"文件名: {self.filename}\n")
                 f.write("="*70 + "\n")
         except Exception as e:
-            print(f"❌ 完成文件失败: {e}")
+            print(f"完成文件失败: {e}")
 
-# ---------- 用户名搜索器类 ----------
 class UsernamePostSearcher:
-    """从帖子中搜索用户名的多线程搜索器"""
     def __init__(self, spider, keyword, threads=200, max_pages=5000, saver=None):
         self.spider = spider
         self.keyword = keyword
@@ -108,10 +89,9 @@ class UsernamePostSearcher:
         self.found_users = []
         self.lock = threading.Lock()
         self.seen_user_ids = set()
-        self.user_cache = {}  # 用户信息缓存
+        self.user_cache = {}
         
     def get_user_full_info_cached(self, user_id):
-        """获取用户信息（带缓存）"""
         if user_id in self.user_cache:
             return self.user_cache[user_id]
         
@@ -123,7 +103,6 @@ class UsernamePostSearcher:
         return None
     
     def search_page(self, page):
-        """搜索单个页面"""
         try:
             result = self.spider.get_posts(page=page)
             if not result["success"]:
@@ -135,21 +114,18 @@ class UsernamePostSearcher:
             page_found = 0
             
             for post in posts:
-                # 获取用户信息
                 user_info = post.get("user", {})
                 user_id = user_info.get("id") or post.get("user_id")
                 
                 if not user_id:
                     continue
                 
-                # 获取完整用户信息
                 full_info = self.get_user_full_info_cached(user_id)
                 if not full_info:
                     continue
                     
                 username = full_info.get("name", "")
                 
-                # 检查用户名是否包含关键词
                 if user_id and self.keyword in username:
                     with self.lock:
                         if user_id not in self.seen_user_ids:
@@ -159,14 +135,11 @@ class UsernamePostSearcher:
                             self.found_users.append(full_info)
                             page_found += 1
                             
-                            # 显示找到的用户（统一格式）
                             count = len(self.found_users)
                             print(f"\n[{count}] 👤 {full_info['name']} (ID:{full_info['id']}) 第{page}页")
                             
-                            # 统一显示格式：与关注查询相同
                             self.spider.display_complete_user_info(full_info)
                             
-                            # 保存记录
                             if self.saver:
                                 details = f"用户名: {full_info['name']}"
                                 if full_info.get('sex_text'):
@@ -175,7 +148,6 @@ class UsernamePostSearcher:
                                     details += f", 属性: {full_info['sex_p_text']}"
                                 self.saver.save_record(f"用户{full_info['id']}", "✅", details)
             
-            # 记录本页统计
             if self.saver:
                 self.saver.save_record(f"第{page}页", "📊", f"处理{len(posts)}条帖子，找到{page_found}个用户")
             
@@ -186,18 +158,15 @@ class UsernamePostSearcher:
                 self.saver.save_record(f"第{page}页", "❌", f"搜索失败: {e}")
     
     def search_all(self):
-        """使用多线程搜索所有页面"""
         print(f"\n🔍 开始多线程搜索... (线程数: {self.threads}, 页数: {self.max_pages})")
         
         with ThreadPoolExecutor(max_workers=self.threads) as executor:
-            # 提交所有页面任务
             futures = []
             for page in range(1, self.max_pages + 1):
                 future = executor.submit(self.search_page, page)
                 futures.append(future)
-                time.sleep(0.1)  # 避免请求过快
+                time.sleep(0.1)
             
-            # 等待所有任务完成
             for future in as_completed(futures):
                 try:
                     future.result()
@@ -206,30 +175,25 @@ class UsernamePostSearcher:
         
         return self.found_users
 
-# ---------- 核心爬虫类 ----------
 class BDSMForumSpider:
     def __init__(self, token="", data_dir=None, interactive=False):
-        # 数据保存目录
         if data_dir is None:
             if interactive:
-                # 命令行交互模式，询问用户
                 print("=" * 60)
                 default_dir = "bdsm_data"
                 data_dir = input(f"请输入数据保存目录 (默认: {default_dir}): ").strip()
                 if not data_dir:
                     data_dir = default_dir
             else:
-                # GUI 模式，使用默认目录
                 data_dir = "bdsm_data"
 
         self.base_url = "https://suo.jiushu1234.com"
         self.token = token
         self.headers = self.get_generic_headers()
 
-        # 列表接口默认 payload
         self.payload_template = {
             "page": 1,
-            "order": {"create_time": "desc"},  # 按创建时间倒序（由新到旧）
+            "order": {"create_time": "desc"},
             "append": {
                 "1": "files",
                 "3": "is_dig",
@@ -245,21 +209,17 @@ class BDSMForumSpider:
         self.current_page = 1
         self.has_more = True
 
-        # 目录结构
         self.data_dir = data_dir
-        self.users_dir = os.path.join(data_dir, "帖子")  # 帖子保存目录
-        self.votes_dir = os.path.join(data_dir, "投票")  # 投票保存目录
-        self.attention_dir = os.path.join(data_dir, "关注")  # 关注保存目录
-        self.search_dir = os.path.join(data_dir, "搜索")  # 搜索保存目录
-        self.accounts_dir = os.path.join(data_dir, "账号")  # 账号保存目录
-        self.accounts_file = os.path.join(data_dir, "账号", "accounts.json")  # 账号文件路径
+        self.users_dir = os.path.join(data_dir, "帖子")
+        self.votes_dir = os.path.join(data_dir, "投票")
+        self.attention_dir = os.path.join(data_dir, "关注")
+        self.search_dir = os.path.join(data_dir, "搜索")
+        self.accounts_dir = os.path.join(data_dir, "账号")
+        self.accounts_file = os.path.join(data_dir, "账号", "accounts.json")
         
-        # 初始化所有目录
         self.init_data_dirs()
 
-    # ---------- 工具方法 ----------
     def init_data_dirs(self):
-        """初始化数据目录"""
         dirs = [
             self.data_dir, 
             self.users_dir, 
@@ -298,18 +258,15 @@ class BDSMForumSpider:
         self.headers["token"] = token
         print(f"✅ Token已设置: {token[:20]}...")
         
-        # 保存登录状态
         self.save_login_state(token)
 
     def save_login_state(self, token):
-        """保存登录状态到文件"""
         login_state = {
             "token": token,
             "last_login": time.strftime("%Y-%m-%d %H:%M:%S"),
             "expire_time": time.time() + 30 * 24 * 60 * 60
         }
         try:
-            # 保存到账号目录
             state_file = os.path.join(self.accounts_dir, "login_state.json")
             with open(state_file, "w", encoding="utf-8") as f:
                 json.dump(login_state, f, ensure_ascii=False, indent=2)
@@ -318,15 +275,12 @@ class BDSMForumSpider:
             print(f"❌ 保存登录状态失败: {e}")
 
     def load_login_state(self):
-        """从文件加载登录状态"""
         try:
-            # 从账号目录读取
             state_file = os.path.join(self.accounts_dir, "login_state.json")
             if os.path.exists(state_file):
                 with open(state_file, "r", encoding="utf-8") as f:
                     login_state = json.load(f)
                     
-                # 检查是否过期
                 if login_state.get("expire_time", 0) > time.time():
                     token = login_state.get("token")
                     if token and len(token) > 20:
@@ -342,7 +296,6 @@ class BDSMForumSpider:
         return None
 
     def clear_login_state(self):
-        """清除登录状态"""
         try:
             state_file = os.path.join(self.accounts_dir, "login_state.json")
             if os.path.exists(state_file):
@@ -351,30 +304,21 @@ class BDSMForumSpider:
         except:
             pass
 
-    # ---------- JSON注释相关 ----------
     def get_field_comments(self):
-        """获取统一的字段注释映射"""
         return {
-            # 基本字段
             "id": "ID",
             "code": "响应代码",
             "msg": "响应消息",
             "data": "数据主体",
-            
-            # 分页信息
             "total": "总记录数",
             "per_page": "每页数量",
             "current_page": "当前页码",
             "last_page": "总页数",
-            
-            # 关注相关
             "uid": "被关注者用户ID",
             "attention_id": "关注记录ID",
             "create_time": "创建时间",
             "update_time": "更新时间",
             "user_id": "用户ID",
-            
-            # 帖子相关
             "status": "状态",
             "title": "标题",
             "pic": "头像",
@@ -429,8 +373,6 @@ class BDSMForumSpider:
             "play": "播放内容",
             "play_digs": "播放点赞",
             "gt_info": "其他信息",
-            
-            # 用户信息
             "user": "用户信息",
             "user_name": "用户名",
             "is_admin": "是否管理员",
@@ -490,8 +432,6 @@ class BDSMForumSpider:
             "is_rl": "是否为RL",
             "sex_cert": "性别认证",
             "zuan": "钻石数量",
-            
-            # files 数组内部字段翻译
             "table_name": "表名",
             "data_id": "数据ID",
             "basename": "基础名称",
@@ -504,8 +444,6 @@ class BDSMForumSpider:
             "ges": "其他信息",
             "check_code": "检查代码",
             "wavs": "音频信息",
-            
-            # 查询信息
             "_query_info": "查询信息",
             "_note": "注释说明",
             "api_response": "API响应数据",
@@ -514,7 +452,6 @@ class BDSMForumSpider:
         }
 
     def format_json_with_comments(self, data: Dict) -> str:
-        """生成带中文注释的JSON格式字符串"""
         if not data:
             return "{}"
         
@@ -532,7 +469,6 @@ class BDSMForumSpider:
                 formatted = f'{indent_str}"{key}": {{{comment_str}\n'
                 keys_list = list(value.keys())
                 
-                # 特殊处理：u字段不翻译
                 if key == "u":
                     keys_list = ["id"] + [k for k in keys_list if k != "id"]
                 
@@ -560,7 +496,6 @@ class BDSMForumSpider:
                         formatted += f'{indent_str}  {{\n'
                         item_keys = list(item.keys())
                         
-                        # 特殊处理：u字段不翻译
                         if "u" in item_keys:
                             item_keys = ["id"] + [k for k in item_keys if k != "id"]
                         
@@ -601,22 +536,18 @@ class BDSMForumSpider:
                 formatted += f'{comment_str},\n'
                 return formatted
         
-        # 开始构建JSON
         result = "{\n"
         keys = list(data.keys())
         
-        # 检测数据类型：关注数据有特殊字段，帖子数据没有
         is_attention_data = any(field in keys for field in ["_query_info", "_note", "api_response"])
         
         if is_attention_data:
-            # 关注数据：确保特殊字段在前
             priority_fields = []
             for field in ["_query_info", "_note", "api_response"]:
                 if field in keys:
                     priority_fields.append(field)
                     keys.remove(field)
             
-            # 添加其他标准字段
             for field in ["id", "create_time", "user_id"]:
                 if field in keys:
                     priority_fields.append(field)
@@ -624,7 +555,6 @@ class BDSMForumSpider:
                     
             keys = priority_fields + keys
         else:
-            # 帖子数据：确保常用字段在前
             priority_fields = []
             for field in ["id", "create_time", "user_id", "title", "content"]:
                 if field in keys:
@@ -649,35 +579,24 @@ class BDSMForumSpider:
         result += "}"
         return result
 
-    # ---------- 统一帖子显示函数 ----------
     def display_post_for_browsing(self, post_data: Dict, index: int = None):
-        """
-        统一显示帖子内容（四个功能共用）
-        index: 序号（必填）
-        """
         if not post_data:
             return
         
-        # 获取帖子ID和用户ID
         post_id = post_data.get("id")
         user_info = post_data.get("user", {})
         user_id = user_info.get("id") or post_data.get("user_id")
         
-        # 显示帖子基本信息（只显示序号）
         if index is not None:
             print(f"\n[{index}] 帖子ID: {post_id}")
         
-        # 获取完整的用户信息（关键修改）
         complete_user_info = None
         if user_id:
             complete_user_info = self.get_complete_user_info(user_id)
         
-        # 显示用户信息
         if complete_user_info:
-            # 使用完整的用户信息
             print(f"   👤 用户: {complete_user_info.get('name', f'用户_{user_id}')} (ID: {user_id})")
             
-            # 显示详细的用户信息（统一格式）
             if complete_user_info.get('age'):
                 print(f"   🎂 年龄: {complete_user_info['age']}", end="")
                 if complete_user_info.get('birthday'):
@@ -707,15 +626,12 @@ class BDSMForumSpider:
                 print(f"   ⏰ 最后在线: {complete_user_info['last_time']}")
         
         elif user_info.get('user_name'):
-            # 如果获取不到完整信息，至少显示用户名
             print(f"   👤 用户: {user_info['user_name']} (ID: {user_id})")
         
-        # 显示帖子发布时间
         if post_data.get('create_time'):
             create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(post_data.get("create_time", 0)))
             print(f"   📅 发布时间: {create_time}")
         
-        # 显示帖子内容（始终显示）
         has_content = False
         if 'content' in post_data and post_data['content'] and post_data['content'].strip():
             content = post_data['content']
@@ -725,7 +641,6 @@ class BDSMForumSpider:
                 print(f"   📝 内容: {content}")
             has_content = True
         else:
-            # 如果没有content字段，使用title作为内容
             title = post_data.get('title', '')
             if title and title.strip():
                 if len(title) > 150:
@@ -734,18 +649,13 @@ class BDSMForumSpider:
                     print(f"   📝 内容: {title}")
                 has_content = True
         
-        # 如果没有文字内容，显示提示
         if not has_content:
             print(f"   📝 内容: [此帖无文字内容]")
         
-        # 显示统计信息
         print(f"   📊 浏览: {post_data.get('onclick', 0)} | 赞: {post_data.get('dig_count', 0)} | 评论: {post_data.get('com_count', 0)}")
         
-
-                        # 显示图片信息（如果有）- 只显示有效的图片URL
         files = post_data.get("files", [])
         if isinstance(files, list) and files:
-            # 提取所有有效的图片URL
             image_urls = []
             for f in files:
                 url = ""
@@ -760,18 +670,12 @@ class BDSMForumSpider:
             if image_urls:
                 print(f"   🖼️  图片数量: {len(image_urls)}张")
                 
-                # 显示所有有效的图片URL
                 for i, url in enumerate(image_urls, 1):
                     print(f"     图片{i}: {url}")
             else:
                 print(f"   📁 附件数量: {len(files)}个 [无有效图片链接]")
 
-    # ---------- 统一用户信息获取和展示 ----------
     def get_complete_user_info(self, user_id):
-        """
-        获取完整的用户信息（统一格式）
-        返回：身高、体重、生日、性别、性取向、角色、用户ID、用户名、最后在线时间
-        """
         try:
             r = requests.post(
                 f"{self.base_url}/api.php/user/show",
@@ -784,12 +688,10 @@ class BDSMForumSpider:
             if data.get("code") == 1 and data.get("data"):
                 user = data["data"]
                 
-                # 获取最后在线时间（转换为可读格式）
                 last_time_raw = user.get("last_time")
                 last_time_str = ""
                 if last_time_raw:
                     try:
-                        # 假设是时间戳
                         if isinstance(last_time_raw, (int, float)) and last_time_raw > 0:
                             last_time_str = datetime.fromtimestamp(last_time_raw).strftime("%Y-%m-%d %H:%M:%S")
                         else:
@@ -797,37 +699,23 @@ class BDSMForumSpider:
                     except:
                         last_time_str = str(last_time_raw)
                 
-                # 构建完整的用户信息（统一字段）
                 complete_info = {
-                    # 核心信息
                     "id": user_id,
                     "user_id": user_id,
                     "user_name": user.get("user_name", f"用户_{user_id}"),
                     "name": user.get("user_name", f"用户_{user_id}"),
                     "nick_name": user.get("nick_name", ""),
-                    
-                    # 身体信息
                     "height": user.get("height", ""),
                     "weight": user.get("weight", ""),
-                    
-                    # 年龄生日
                     "age": user.get("age", ""),
                     "birthday": user.get("birthday", ""),
-                    
-                    # 性别角色
                     "sex_text": self.get_sex_text(user),
                     "sex_o_text": self.get_sex_o_text(user),
                     "sex_p_text": self.get_sex_p_text(user),
-                    
-                    # 地区
                     "country": user.get("country", ""),
                     "country_pic": user.get("country_pic", ""),
-                    
-                    # 最后在线时间
                     "last_time": last_time_str,
                     "last_time_raw": last_time_raw,
-                    
-                    # 其他可能需要的字段
                     "intro": user.get("intro", ""),
                     "user_url": f"{self.base_url}/pd/#/page/user_show/user_show?id={user_id}",
                     "pic": user.get("country_pic", ""),
@@ -837,7 +725,6 @@ class BDSMForumSpider:
         except Exception as e:
             print(f"❌ 获取用户{user_id}信息失败: {e}")
         
-        # 如果获取失败，返回基础信息
         return {
             "id": user_id,
             "user_id": user_id,
@@ -856,16 +743,9 @@ class BDSMForumSpider:
         }
 
     def display_complete_user_info(self, user_info, prefix="   ", compact=False):
-        """
-        统一显示用户完整信息
-        user_info: 用户信息字典
-        prefix: 显示前缀
-        compact: 是否紧凑模式
-        """
         if not user_info:
             return
             
-        # 用户名和ID
         username = user_info.get('name', '')
         user_id = user_info.get('id', '')
         
@@ -874,7 +754,6 @@ class BDSMForumSpider:
         
         info_lines = []
         
-        # 年龄生日
         age_info = ""
         if user_info.get('age'):
             age_info = f"年龄: {user_info['age']}岁"
@@ -882,7 +761,6 @@ class BDSMForumSpider:
                 age_info += f" | 生日: {user_info['birthday']}"
             info_lines.append(age_info)
         
-        # 性别、性取向、角色
         gender_info_parts = []
         if user_info.get('sex_text'):
             gender_info_parts.append(f"性别: {user_info['sex_text']}")
@@ -894,31 +772,25 @@ class BDSMForumSpider:
         if gender_info_parts:
             info_lines.append(" | ".join(gender_info_parts))
         
-        # 身高体重
         if user_info.get('height'):
             body_info = f"身高: {user_info['height']}cm"
             if user_info.get('weight'):
                 body_info += f" | 体重: {user_info['weight']}kg"
             info_lines.append(body_info)
         
-        # 地区
         if user_info.get('country'):
             info_lines.append(f"地区: {user_info['country']}")
         
-        # 最后在线时间
         if user_info.get('last_time'):
             info_lines.append(f"最后在线: {user_info['last_time']}")
         
-        # 显示所有信息行
         for line in info_lines:
             print(f"{prefix}{line}")
         
-        # 如果不是紧凑模式，显示分隔线
         if not compact and info_lines:
             print(f"{prefix}{'-' * 40}")
 
     def get_sex_text(self, user):
-        """获取性别文本"""
         sex_text = user.get("sex_text")
         if sex_text and sex_text != "未知" and not sex_text.startswith("用户_"):
             return sex_text
@@ -927,7 +799,6 @@ class BDSMForumSpider:
         return sex_map.get(sex_val, "")
 
     def get_sex_o_text(self, user):
-        """获取性取向文本"""
         sex_o_text = user.get("sex_o_text")
         if sex_o_text and sex_o_text != "未知" and not sex_o_text.startswith("用户_"):
             return sex_o_text
@@ -938,7 +809,6 @@ class BDSMForumSpider:
         return sex_o_map.get(sex_o_raw, "")
 
     def get_sex_p_text(self, user):
-        """获取属性文本"""
         sex_p_text = user.get("sex_p_text")
         if sex_p_text and sex_p_text != "未知" and not sex_p_text.startswith("用户_"):
             return sex_p_text
@@ -946,21 +816,17 @@ class BDSMForumSpider:
         return sex_p_map.get(user.get("sex_p", 0), "")
 
     def format_user_archive_text(self, user_info):
-        """格式化用户档案文本"""
         text = f"{'='*60}\n👤 帖子用户档案\n{'='*60}\n"
         text += f"用户ID: {user_info['id']}\n"
         
-        # 修复这行：避免嵌套f-string
         user_name = user_info.get('name', f'用户_{user_info["id"]}')
         text += f"用户名: {user_name}\n"
         
-        # 年龄生日
         if user_info.get('age') and user_info['age'] != "未知":
             text += f"年龄: {user_info['age']}岁\n"
         if user_info.get('birthday') and user_info['birthday'] != "未知":
             text += f"生日: {user_info['birthday']}\n"
         
-        # 性别、性取向、角色
         if user_info.get('sex_text') and user_info['sex_text'] != "未知":
             text += f"性别: {user_info['sex_text']}\n"
         if user_info.get('sex_o_text') and user_info['sex_o_text'] != "未知":
@@ -968,17 +834,14 @@ class BDSMForumSpider:
         if user_info.get('sex_p_text') and user_info['sex_p_text'] != "未知":
             text += f"角色: {user_info['sex_p_text']}\n"
         
-        # 身高体重
         if user_info.get('height'):
             text += f"身高: {user_info['height']}cm\n"
         if user_info.get('weight'):
             text += f"体重: {user_info['weight']}kg\n"
         
-        # 地区
         if user_info.get('country'):
             text += f"地区: {user_info['country']}\n"
         
-        # 最后在线时间
         if user_info.get('last_time'):
             text += f"最后在线时间: {user_info['last_time']}\n"
         
@@ -987,9 +850,7 @@ class BDSMForumSpider:
         
         return text
 
-    # ---------- 用户名搜索功能 ----------
     def search_username(self):
-        """搜索包含关键词的用户名"""
         print("\n" + "=" * 50)
         print("🔍 用户名搜索")
         print("=" * 50)
@@ -1006,13 +867,11 @@ class BDSMForumSpider:
             print("❌ 无效选择")
 
     def search_by_username_from_posts(self):
-        """搜索用户名"""
         keyword = input("请输入要搜索的关键词: ").strip()
         if not keyword:
             print("❌ 请输入关键词")
             return
         
-        # 自定义配置
         print("\n🔧 自定义配置:")
         
         try:
@@ -1033,22 +892,18 @@ class BDSMForumSpider:
         print(f"⚡ 使用 {threads} 个线程")
         print("=" * 60)
         
-        # 创建搜索器
         searcher = UsernamePostSearcher(self, keyword, threads, max_pages, saver=None)
         
         start_time = time.time()
         
-        # 直接使用全自动搜索
         found_users = searcher.search_all()
         
         elapsed = time.time() - start_time
         
-        # 显示统计结果
         print(f"\n\n✅ 搜索完成！")
         print(f"⏱️  耗时: {elapsed:.1f}秒")
         print(f"👤 找到 {len(found_users)} 个用户")
         
-        # 统计信息
         if found_users:
             print("\n📊 用户统计:")
             sex_count = {}
@@ -1060,7 +915,6 @@ class BDSMForumSpider:
                 sex_o_count[user.get('sex_o_text', '未知')] = sex_o_count.get(user.get('sex_o_text', '未知'), 0) + 1
                 sex_p_count[user.get('sex_p_text', '未知')] = sex_p_count.get(user.get('sex_p_text', '未知'), 0) + 1
             
-            # 过滤空值
             sex_count = {k: v for k, v in sex_count.items() if k and k != '未知'}
             sex_o_count = {k: v for k, v in sex_o_count.items() if k and k != '未知'}
             sex_p_count = {k: v for k, v in sex_p_count.items() if k and k != '未知'}
@@ -1072,7 +926,6 @@ class BDSMForumSpider:
             if sex_p_count:
                 print(f"  属性: {', '.join([f'{k}:{v}人' for k, v in sex_p_count.items()])}")
         
-        # 自动保存找到的用户到搜索目录
         if found_users:
             print("\n💾 正在保存用户信息到搜索目录...")
             saved_count = 0
@@ -1085,7 +938,6 @@ class BDSMForumSpider:
         return found_users
 
     def search_by_userid(self):
-        """按用户ID搜索（完整信息版）"""
         user_id = input("请输入用户ID (如88905): ").strip()
         if not user_id or not user_id.isdigit():
             print("❌ 请输入有效的用户ID")
@@ -1095,14 +947,12 @@ class BDSMForumSpider:
         print(f"\n🔍 搜索用户ID: {user_id}")
         print("=" * 60)
         
-        # 获取用户完整信息
         user_info = self.get_complete_user_info(user_id)
         
         if user_info:
             print(f"\n👤 {user_info['name']} (ID:{user_info['id']})")
             self.display_complete_user_info(user_info, prefix="   ")
             
-            # 直接保存到搜索目录
             print(f"\n💾 正在保存用户信息到搜索目录...")
             if self.save_user_info_to_search_dir(user_info):
                 print(f"✅ 用户信息已保存到搜索目录: {self.search_dir}/")
@@ -1110,35 +960,28 @@ class BDSMForumSpider:
             print(f"❌ 未找到用户ID: {user_id}")
 
     def save_user_info_to_search_dir(self, user_info):
-        """保存用户信息到搜索目录（完整格式 + JSON注释数据）"""
         try:
-            # 确保搜索目录存在
             os.makedirs(self.search_dir, exist_ok=True)
             
             user_id = user_info['id']
             username = user_info.get('name', f"用户_{user_id}")
             
-            # 使用用户名而不是"用户_ID"
             safe_name = INVALID_CHARS.sub("_", username)[:20] if username else f"用户_{user_id}"
             filename = f"{user_id}_{safe_name}.txt"
             filepath = os.path.join(self.search_dir, filename)
             
-            # 构建用户档案文本（完整格式）
             post_text = f"{'='*60}\n🔍 用户搜索结果档案\n{'='*60}\n"
             post_text += f"👤 用户ID: {user_id}\n"
             post_text += f"📛 用户名: {username}\n"
             
-            # 昵称（如果有）
             if user_info.get('nick_name'):
                 post_text += f"🏷️  昵称: {user_info['nick_name']}\n"
             
-            # 年龄生日
             if user_info.get('age') and user_info['age'] != "未知":
                 post_text += f"🎂 年龄: {user_info['age']}岁\n"
             if user_info.get('birthday') and user_info['birthday'] != "未知":
                 post_text += f"📅 生日: {user_info['birthday']}\n"
             
-            # 性别、性取向、角色
             if user_info.get('sex_text') and user_info['sex_text'] != "未知":
                 post_text += f"⚧️ 性别: {user_info['sex_text']}\n"
             if user_info.get('sex_o_text') and user_info['sex_o_text'] != "未知":
@@ -1146,17 +989,14 @@ class BDSMForumSpider:
             if user_info.get('sex_p_text') and user_info['sex_p_text'] != "未知":
                 post_text += f"🎭 角色: {user_info['sex_p_text']}\n"
                 
-            # 身高体重
             if user_info.get('height'):
                 post_text += f"📏 身高: {user_info['height']}cm\n"
             if user_info.get('weight'):
                 post_text += f"⚖️ 体重: {user_info['weight']}kg\n"
             
-            # 地区
             if user_info.get('country'):
                 post_text += f"📍 地区: {user_info['country']}\n"
             
-            # 最后在线时间
             if user_info.get('last_time'):
                 post_text += f"⏰ 最后在线: {user_info['last_time']}\n"
             
@@ -1164,11 +1004,9 @@ class BDSMForumSpider:
             post_text += f"📅 搜索时间: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
             post_text += f"{'='*60}\n"
             
-            # 添加完整JSON注释数据（像关注查询一样）
             post_text += f"\n📝 带中文注释的完整JSON数据:\n"
             post_text += "-" * 60 + "\n"
             
-            # 重新获取完整的用户原始数据（包含所有字段）
             try:
                 r = requests.post(
                     f"{self.base_url}/api.php/user/show",
@@ -1181,7 +1019,6 @@ class BDSMForumSpider:
                 if data.get("code") == 1 and data.get("data"):
                     user_raw_data = data["data"]
                     
-                    # 构建数据结构（像关注查询一样）
                     full_data = {
                         "_query_info": {
                             "query_time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -1193,7 +1030,6 @@ class BDSMForumSpider:
                         "api_response": data
                     }
                     
-                    # 生成带注释的JSON文本
                     formatted_json = self.format_json_with_comments(full_data)
                     post_text += formatted_json
                     post_text += f"\n{'='*60}\n"
@@ -1218,7 +1054,6 @@ class BDSMForumSpider:
             print(f"❌ 保存用户信息失败: {e}")
             return False
 
-    # ---------- 帖子相关功能 ----------
     def get_posts(self, page=None, limit=20, keyword=""):
         payload = self.payload_template.copy()
         payload["page"] = page if page else self.current_page
@@ -1259,10 +1094,8 @@ class BDSMForumSpider:
                 if data.get("code") == 1 and data.get("data"):
                     post_data = data["data"]
                     
-                    # 确保有user字段
                     user_id = post_data.get("user_id")
                     if user_id:
-                        # 获取完整用户信息
                         user_info = self.get_complete_user_info(user_id)
                         if user_info:
                             post_data["user"] = {
@@ -1294,7 +1127,6 @@ class BDSMForumSpider:
         return None
 
     def search_posts_with_page(self, keyword, page=1):
-        """带页码的搜索方法"""
         payload = self.payload_template.copy()
         payload["kw"] = keyword
         payload["page"] = page
@@ -1345,16 +1177,13 @@ class BDSMForumSpider:
             return {"success": False, "error": str(e)}
 
     def crawl_user_posts(self, user_id: int):
-        """爬取用户全部帖子"""
         print(f"\n🎯 爬取用户 {user_id} 的全部帖子")
         
-        # 首先显示用户完整信息
         user_info = self.get_complete_user_info(user_id)
         if user_info:
             print(f"\n👤 用户信息:")
             self.display_complete_user_info(user_info, prefix="   ")
         
-        # 询问爬取页数
         try:
             page_input = input("请输入搜索页数 (默认1页): ").strip()
             if not page_input:
@@ -1392,15 +1221,12 @@ class BDSMForumSpider:
             print(f"✅ 第 {page} 页获取到 {len(posts)} 个帖子")
             all_posts.extend(posts)
             
-            # 显示当前页的帖子
             print(f"\n📋 第 {page} 页帖子列表:")
             print("=" * 50)
             
             for i, post in enumerate(posts, 1):
-                # 使用统一的显示函数
                 self.display_post_for_browsing(post, index=i)
             
-            # 保存当前页的帖子
             if posts:
                 print("\n" + "=" * 50)
                 save_choice = input(f"是否保存第 {page} 页的所有帖子？(y/n/s=选择保存): ").strip().lower()
@@ -1435,14 +1261,12 @@ class BDSMForumSpider:
                 else:
                     print(f"⏭️  跳过第 {page} 页保存")
             
-            # 检查是否还有更多页
             if not result.get("has_more", False):
                 print("📭 最后一页，停止爬取")
                 break
                 
             page += 1
             
-            # 如果不是最后一页，询问是否继续下一页
             if page <= max_pages:
                 continue_choice = input(f"\n是否继续爬取第 {page} 页？(y/n): ").strip().lower()
                 if continue_choice != 'y':
@@ -1450,7 +1274,6 @@ class BDSMForumSpider:
                     break
                 time.sleep(1)
         
-        # 统计总结果
         if all_posts:
             print(f"\n{'='*50}")
             print("🎉 用户帖子爬取完成！")
@@ -1468,7 +1291,6 @@ class BDSMForumSpider:
             print(f"\n❌ 未获取到用户 {user_id} 的帖子")
 
     def crawl_specific_post(self, post_id: int):
-        """爬取特定帖子"""
         print(f"\n🎯 爬取特定帖子: {post_id}")
         detail = self.get_post_detail(post_id)
         
@@ -1476,18 +1298,14 @@ class BDSMForumSpider:
             print(f"❌ 未找到帖子 {post_id}")
             return
         
-        # 使用统一的显示函数
         print(f"\n📄 帖子详情:")
-        self.display_post_for_browsing(detail, index=1)  # 单个帖子显示为序号1
+        self.display_post_for_browsing(detail, index=1)
         
-        # 获取用户信息
         user_info = detail.get("user", {})
         user_id = user_info.get("id") or detail.get("user_id")
         
-        # 保存帖子
         save_choice = input("是否保存此帖子？(y/n): ").strip().lower()
         if save_choice == 'y':
-            # 获取完整用户信息用于保存
             if user_id:
                 complete_user_info = self.get_complete_user_info(user_id)
                 if complete_user_info:
@@ -1504,11 +1322,9 @@ class BDSMForumSpider:
             print(f"⏭️  跳过保存帖子 {post_id}")
 
     def save_post_for_user_crawl(self, post_data: Dict, user_info: Dict, manual_mode: bool = False, index: int = None):
-        """保存用户帖子（修复版）"""
         try:
             post_id = post_data.get("id")
 
-            # 安全处理 user_info（可能是None、列表或字典）
             if user_info is None:
                 user_info = {}
             elif isinstance(user_info, list):
@@ -1528,23 +1344,18 @@ class BDSMForumSpider:
             else:
                 username = f"用户_{user_id}"
             
-            # 使用用户名而不是"用户_ID"
             safe_name = INVALID_CHARS.sub("_", username)[:20] if username else f"用户_{user_id}"
             filename = f"{user_id}_{safe_name}.txt"
             filepath = os.path.join(self.users_dir, filename)
             
             file_exists = os.path.exists(filepath)
             
-            # 如果是新文件，写入完整的用户档案
             if not file_exists:
-                # 生成完整的用户档案文本
                 archive_text = self.format_user_archive_text(user_info)
                 
                 with open(filepath, "w", encoding="utf-8") as f:
                     f.write(archive_text)
             
-            # 添加帖子内容
-            # 修复：安全获取内容（优先使用content，没有则使用title）
             content = post_data.get("content") or post_data.get("title") or "无内容"
             create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(post_data.get("create_time", 0)))
             
@@ -1557,7 +1368,6 @@ class BDSMForumSpider:
             post_text += f"点赞数: {post_data.get('dig_count', 0)}\n"
             post_text += f"评论数: {post_data.get('com_count', 0)}\n"
             
-            # 安全处理files字段
             files = post_data.get("files")
             if isinstance(files, list) and files:
                 post_text += f"图片数量: {len(files)}\n"
@@ -1598,12 +1408,10 @@ class BDSMForumSpider:
         user_info = post_data.get("user", {})
         user_id = user_info.get("id") or post_data.get("user_id")
         
-        # 获取完整用户信息
         complete_user_info = None
         if user_id:
             complete_user_info = self.get_complete_user_info(user_id)
         
-        # 使用完整用户信息或基本用户信息
         user_data = complete_user_info if complete_user_info else user_info
         
         info = {
@@ -1642,7 +1450,6 @@ class BDSMForumSpider:
             print("❌ 还没有保存任何文件")
             return
         
-        # 获取所有txt文件
         all_files = [f for f in os.listdir(self.users_dir) if f.endswith('.txt')]
         
         if not all_files:
@@ -1675,7 +1482,7 @@ class BDSMForumSpider:
         
         while True:
             print(f"\n📄 当前页码: {self.current_page}")
-            result = self.get_next_page()  # 使用原来的get_next_page
+            result = self.get_next_page()
             
             if not result or not result.get("success"):
                 print("❌ 获取数据失败或没有更多数据")
@@ -1690,10 +1497,8 @@ class BDSMForumSpider:
             total_viewed += len(posts)
             
             for i, post in enumerate(posts, 1):
-                # 使用统一的显示函数
                 self.display_post_for_browsing(post, index=i)
                 
-                # 简化输入：回车继续，y保存，q退出
                 print("   [回车=继续] [y=保存] [q=退出]")
                 save_choice = input("   请选择: ").strip().lower()
                 
@@ -1707,7 +1512,6 @@ class BDSMForumSpider:
                     print(f"  耗时: {elapsed:.1f}秒")
                     return
                 elif save_choice == 'y':
-                    # 获取完整用户信息
                     user_info = post.get("user", {})
                     user_id = user_info.get('id') or post.get('user_id')
                     if user_id:
@@ -1723,11 +1527,9 @@ class BDSMForumSpider:
                             print(f"❌ 无法获取用户 {user_id} 的完整信息")
                     else:
                         print(f"❌ 无法获取用户ID")
-                # 如果是回车（空输入）或其他任何输入，都继续下一个帖子
                 else:
                     print(f"⏭️  继续浏览...")
             
-            # 询问是否继续下一页
             print(f"\n第 {self.current_page} 页浏览完成")
             print(f"本页统计: 查看{len(posts)}帖 | 保存{total_saved}帖")
             
@@ -1752,7 +1554,6 @@ class BDSMForumSpider:
             print("❌ 请输入搜索关键词")
             return
         
-        # 添加翻页功能
         try:
             page_input = input("请输入搜索页数 (默认1页): ").strip()
             if not page_input:
@@ -1764,7 +1565,6 @@ class BDSMForumSpider:
             max_pages = 1
             print("⚠️  输入无效，使用默认1页")
         
-        # 创建结果保存器
         saver = ResultSaver(self.search_dir, f"帖子搜索_{keyword}", f"第1页", f"第{max_pages}页")
         
         all_posts = []
@@ -1793,15 +1593,12 @@ class BDSMForumSpider:
             saver.save_record(f"第{page}页", "✅", f"找到{len(posts)}个帖子")
             all_posts.extend(posts)
             
-            # 显示当前页的帖子
             print(f"\n📋 第 {page} 页搜索结果:")
             print("=" * 50)
             
             for i, post in enumerate(posts, 1):
-                # 使用统一的显示函数
                 self.display_post_for_browsing(post, index=i)
             
-            # 保存当前页的帖子
             if posts:
                 print("\n" + "=" * 50)
                 save_choice = input(f"是否保存第 {page} 页的所有搜索结果？(y/n/s=选择保存): ").strip().lower()
@@ -1809,11 +1606,9 @@ class BDSMForumSpider:
                 if save_choice == 'y':
                     page_saved = 0
                     for post in posts:
-                        # 获取用户信息
                         user_info = post.get("user", {})
                         user_id = user_info.get("id") or post.get("user_id")
                         if user_id:
-                            # 获取完整用户信息
                             complete_user_info = self.get_complete_user_info(user_id)
                             if complete_user_info:
                                 if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False):
@@ -1838,7 +1633,6 @@ class BDSMForumSpider:
                             page_saved = 0
                             for idx in indices:
                                 if 0 <= idx < len(posts):
-                                    # 获取用户信息
                                     user_info = posts[idx].get("user", {})
                                     user_id = user_info.get("id") or posts[idx].get("user_id")
                                     if user_id:
@@ -1847,8 +1641,6 @@ class BDSMForumSpider:
                                             if self.save_post_for_user_crawl(posts[idx], complete_user_info, manual_mode=True):
                                                 page_saved += 1
                                                 saver.save_record(f"帖子{posts[idx].get('id')}", "✅", "手动选择保存")
-                                            else:
-                                                saver.save_record(f"帖子{posts[idx].get('id')}", "❌", "保存失败")
                                     time.sleep(0.5)
                             total_saved += page_saved
                             print(f"✅ 第 {page} 页保存了 {page_saved}/{len(indices)} 个帖子")
@@ -1857,7 +1649,6 @@ class BDSMForumSpider:
                             print("❌ 输入格式错误")
                             saver.save_record(f"第{page}页", "❌", "输入格式错误")
                 
-                # 如果不是最后一页，询问是否继续下一页
                 if page < max_pages:
                     continue_choice = input(f"\n是否继续搜索第 {page+1} 页？(y/n): ").strip().lower()
                     if continue_choice != 'y':
@@ -1866,7 +1657,6 @@ class BDSMForumSpider:
             else:
                 saver.save_record(f"第{page}页", "📭", "本页无帖子可保存")
         
-        # 统计总结果
         elapsed = time.time() - start_time
         print(f"\n" + "=" * 50)
         print("🔍 搜索完成！")
@@ -1892,7 +1682,6 @@ class BDSMForumSpider:
     def crawl_and_save_posts(self, start_page=1, max_pages=3):
         print(f"\n🎯 开始批量爬取：从第{start_page}页开始，共{max_pages}页")
         
-        # 创建结果保存器
         saver = ResultSaver(self.search_dir, f"批量爬取", f"第{start_page}页", f"第{start_page+max_pages-1}页")
         
         self.current_page = start_page
@@ -1918,12 +1707,10 @@ class BDSMForumSpider:
             print(f"✅ 获取到 {len(posts)} 个帖子")
             total_posts += len(posts)
             
-            # 显示本页帖子概览
             print(f"\n📋 第 {page_num} 页帖子:")
             print("-" * 50)
             
-            for i, post in enumerate(posts[:5], 1):  # 只显示前5个作为示例
-                # 使用统一的显示函数
+            for i, post in enumerate(posts[:5], 1):
                 self.display_post_for_browsing(post, index=i)
             if len(posts) > 5:
                 print(f"   ... 还有 {len(posts)-5} 个帖子")
@@ -1932,11 +1719,9 @@ class BDSMForumSpider:
             
         page_saved = 0
         for i, post in enumerate(posts, 1):
-            # 获取用户信息
             user_info = post.get("user", {})
             user_id = user_info.get("id") or post.get("user_id")
             if user_id:
-                # 获取完整用户信息
                 complete_user_info = self.get_complete_user_info(user_id)
                 if complete_user_info:
                     success = self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=i)
@@ -1969,7 +1754,6 @@ class BDSMForumSpider:
         saver.finalize(saved_count, total_posts-saved_count, total_posts, elapsed, extra_stats)
         print(f"📋 批量爬取记录已保存: {saver.filepath}")
 
-    # ---------- 投票功能 ----------
     def vote_check(self, task_id: int):
         url = f"{self.base_url}/api.php/play/pds"
         try:
@@ -2003,7 +1787,6 @@ class BDSMForumSpider:
     def vote_single_test(self, task_id: int):
         print(f"\n🧪 测试投票任务: {task_id}")
         
-        # 创建结果保存器
         saver = ResultSaver(self.votes_dir, f"单任务投票测试", f"任务ID{task_id}")
         
         valid, status, code, data = self.vote_check(task_id)
@@ -2022,18 +1805,15 @@ class BDSMForumSpider:
         print(f"📋 投票测试记录已保存: {saver.filepath}")
 
     def vote_single_gui(self, task_id: int):
-        """GUI版本的单次投票功能（无需交互输入，显示原始JSON响应）"""
         print(f"\n[单任务投票] 任务ID: {task_id}")
         print("=" * 50)
 
-        # 1. 先检查任务状态
         print(f"[检查] 任务 {task_id} 状态...")
         url_check = f"{self.base_url}/api.php/play/pds"
         try:
             r_check = requests.post(url_check, headers=self.headers, json={"id": str(task_id)}, timeout=5)
             if r_check.status_code == 200:
                 check_data = r_check.json()
-                # 限制 JSON 输出长度，避免卡顿
                 json_str = json.dumps(check_data, ensure_ascii=False, indent=2)
                 if len(json_str) > 2000:
                     json_str = json_str[:2000] + "\n... (内容过长已截断)"
@@ -2050,13 +1830,11 @@ class BDSMForumSpider:
             print(f"[异常] 检查请求异常: {e}")
             return
 
-        # 2. 执行投票
         url_vote = f"{self.base_url}/api.php/play/pd_do"
         try:
             r_vote = requests.post(url_vote, headers=self.headers, json={"id": task_id, "type": 1}, timeout=5)
             if r_vote.status_code == 200:
                 vote_data = r_vote.json()
-                # 限制 JSON 输出长度
                 json_str = json.dumps(vote_data, ensure_ascii=False, indent=2)
                 if len(json_str) > 2000:
                     json_str = json_str[:2000] + "\n... (内容过长已截断)"
@@ -2115,7 +1893,6 @@ class BDSMForumSpider:
             print("❌ 已取消")
             return
         
-        # 创建结果保存器
         saver = ResultSaver(self.votes_dir, f"批量投票", f"ID{start}", f"ID{end}")
         
         results = {}
@@ -2179,7 +1956,6 @@ class BDSMForumSpider:
                     stats_info = f"✅{success_count} 🔄{already_count} ❌{failed_count} ⚡{speed:.1f}/s"
                     print(f"ID:{task_id} {status_icon}{status_text} code={code} {display_msg} | {stats_info}")
                     
-                    # 保存记录
                     if result_type == "success":
                         saver.save_record(f"任务{task_id}", "✅", f"投票成功: {msg}")
                     elif result_type == "already":
@@ -2311,20 +2087,13 @@ class BDSMForumSpider:
         
         print("=" * 50)
 
-    # ---------- 关注功能 ----------
     def get_attention_list(self, user_id, page=1):
-        """
-        获取指定用户的关注列表
-        :param user_id: 要查询的用户ID
-        :param page: 页码，默认第1页
-        :return: API响应数据
-        """
         url = f"{self.base_url}/api.php/atten/list"
         
         payload = {
             "page": page,
             "order": {},
-            "append": {"u": ["sex_text", "sex_p_text", "sex_o_text"]},  # 关键：使用 'u' 而不是 'user'
+            "append": {"u": ["sex_text", "sex_p_text", "sex_o_text"]},
             "with_count": [],
             "kw": "",
             "user_id": int(user_id)
@@ -2346,11 +2115,9 @@ class BDSMForumSpider:
             return None
 
     def timestamp_to_datetime(self, timestamp):
-        """将Unix时间戳转换为可读的日期时间字符串"""
         if not timestamp:
             return None
         try:
-            # 检查时间戳是否合理（1970年至今）
             if timestamp < 0 or timestamp > 2000000000:
                 return None
             dt = datetime.fromtimestamp(timestamp)
@@ -2359,34 +2126,24 @@ class BDSMForumSpider:
             return None
 
     def parse_attention_list(self, result):
-        """
-        解析关注列表数据
-        :param result: API返回的数据
-        :return: 格式化后的关注列表
-        """
         if not result:
             print("❌ 结果为空")
             return None
             
         if result.get('code') == 1:
-            # 成功
             data = result.get('data', {})
             attention_list = data.get('data', [])
             
             parsed_list = []
             
             for i, item in enumerate(attention_list, 1):
-                # 获取被关注者ID
                 followed_id = item.get('uid')
                 
-                # 关键修改：使用 'u' 字段而不是 'user' 字段
                 user_data = item.get('u', {})
                 
-                # 获取用户信息
                 user_name = user_data.get('user_name', f"用户_{followed_id}")
                 nick_name = user_data.get('nick_name', user_name)
                 
-                # 获取年龄
                 age_raw = user_data.get('age', '')
                 if age_raw is None:
                     age = ''
@@ -2397,17 +2154,14 @@ class BDSMForumSpider:
                 else:
                     age = str(age_raw)
                 
-                # 获取生日
                 birthday = user_data.get('birthday', '')
                 if birthday is None:
                     birthday = ''
                 
-                # 获取性别、性取向、角色信息（直接使用文本形式）
                 sex_text = user_data.get('sex_text', '')
                 sex_o_text = user_data.get('sex_o_text', '')
                 sex_p_text = user_data.get('sex_p_text', '')
                 
-                # 获取最后在线时间
                 last_time_raw = user_data.get('last_time')
                 last_time_str = ""
                 if last_time_raw:
@@ -2419,7 +2173,6 @@ class BDSMForumSpider:
                     except:
                         last_time_str = str(last_time_raw)
                 
-                # 构建用户信息（统一格式）
                 parsed_item = {
                     'attention_id': item.get('id'),
                     'follower_id': item.get('user_id'),
@@ -2457,18 +2210,12 @@ class BDSMForumSpider:
                 'query_timestamp': int(time.time())
             }
         else:
-            # 失败
             error_msg = result.get('msg', '未知错误')
             error_code = result.get('code', -1)
             print(f"❌ API错误: {error_msg} (代码: {error_code})")
             return None
 
     def print_attention_list(self, parsed_data, user_id):
-        """
-        打印关注列表信息（统一格式）
-        :param parsed_data: 解析后的数据
-        :param user_id: 被查询的用户ID
-        """
         if not parsed_data:
             return
         
@@ -2489,12 +2236,10 @@ class BDSMForumSpider:
         print(f"{'-'*60}")
         
         for i, user in enumerate(parsed_data['list'], 1):
-            # 优先显示昵称，没有昵称则显示用户名
             display_name = user.get('nick_name') or user.get('user_name') or f"用户{user['user_id']}"
     
             print(f"{i:2d}. ID: {user['user_id']:6d} | {display_name}")
             
-            # 使用统一格式显示用户信息
             user_display_info = {
                 "id": user['user_id'],
                 "name": display_name,
@@ -2511,35 +2256,28 @@ class BDSMForumSpider:
                 "user_url": user.get('user_url', '')
             }
             
-            # 使用统一的显示函数
             self.display_complete_user_info(user_display_info, prefix="     ", compact=True)
             
-            # 显示关注时间
             if user['create_time']:
                 print(f"     关注时间: {user['create_time']}")
             
             print(f"{'-'*40}")
 
     def save_attention_data(self, data, user_id, page=1):
-        """保存关注列表数据（带中文注释）"""
         if not data:
             print("❌ 没有数据可以保存")
             return False
         
-        # 确保关注目录存在
         os.makedirs(self.attention_dir, exist_ok=True)
         
-        # 获取被查询用户的用户名
         queried_username = ""
         try:
-            # 尝试获取被查询用户的用户名
             queried_user_info = self.get_complete_user_info(user_id)
             if queried_user_info and queried_user_info.get('name'):
                 queried_username = queried_user_info['name']
         except:
             pass
         
-        # 生成文件名：用户ID_用户名.txt
         if queried_username:
             safe_username = INVALID_CHARS.sub("_", queried_username)[:20]
             filename = f"{user_id}_{safe_username}.txt"
@@ -2549,18 +2287,13 @@ class BDSMForumSpider:
         filepath = os.path.join(self.attention_dir, filename)
         
         try:
-            # 关键修改：不再重新获取用户信息，直接复制 'u' 字段到 'user' 字段
-            # 并添加 user_url
             for item in data["data"]["data"]:
                 if "u" in item:
-                    # 复制 u 字段到 user 字段
                     item["user"] = dict(item["u"])
                     
-                    # 添加用户链接
                     uid = item["uid"]
                     item["user"]["user_url"] = f"{self.base_url}/pd/#/page/user_show/user_show?id={uid}"
                 else:
-                    # 如果没有 u 字段，只添加基本信息
                     uid = item["uid"]
                     item["user"] = {
                         "id": uid,
@@ -2568,7 +2301,6 @@ class BDSMForumSpider:
                         "user_url": f"{self.base_url}/pd/#/page/user_show/user_show?id={uid}"
                     }
             
-            # 构建数据结构
             full_data = {
                 "_query_info": {
                     "query_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -2580,10 +2312,8 @@ class BDSMForumSpider:
                 "api_response": data
             }
             
-            # 生成带注释的JSON文本
             formatted_json = self.format_json_with_comments(full_data)
             
-            # 写入文件
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(f"{'='*60}\n")
                 f.write(f"📋 用户关注列表查询结果\n")
@@ -2609,7 +2339,6 @@ class BDSMForumSpider:
             return False
         
     def query_attention_list(self):
-        """查询关注列表"""
         print("\n" + "="*60)
         print("📋 关注列表查询")
         print("=" * 60)
@@ -2629,7 +2358,6 @@ class BDSMForumSpider:
             
             print(f"\n正在查询用户 {user_id} 的关注列表 (第 {page} 页)...")
             
-            # 获取数据
             result = self.get_attention_list(user_id, page)
             
             if not result:
@@ -2640,14 +2368,11 @@ class BDSMForumSpider:
                 print(f"❌ API返回错误: {result.get('msg', '未知错误')}")
                 continue
             
-            # 解析数据
             parsed_data = self.parse_attention_list(result)
             
             if parsed_data:
-                # 显示数据（统一格式）
                 self.print_attention_list(parsed_data, user_id)
                 
-                # 询问保存选项
                 print("\n📁 保存选项:")
                 print("1. 保存带中文注释的完整数据")
                 print("2. 不保存")
@@ -2657,14 +2382,11 @@ class BDSMForumSpider:
                 if save_choice == "1":
                     self.save_attention_data(result, user_id, page)
             
-            # 询问是否继续查询
             continue_query = input("\n是否继续查询其他用户？(y/N): ").strip().lower()
             if continue_query not in ['y', 'yes']:
                 break
 
-    # ========== GUI 适配方法 ==========
     def crawl_specific_post_gui(self, post_id: int):
-        """GUI版本的爬取特定帖子（自动保存，无需交互）"""
         print(f"\n爬取特定帖子: {post_id}")
         print("=" * 50)
 
@@ -2674,11 +2396,9 @@ class BDSMForumSpider:
             print(f"未找到帖子 {post_id}")
             return
 
-        # 显示帖子详情
         print(f"\n帖子详情:")
         self.display_post_for_browsing(detail, index=1)
 
-        # 获取用户信息并保存
         user_info = detail.get("user", {})
         user_id = user_info.get("id") or detail.get("user_id")
 
@@ -2696,12 +2416,10 @@ class BDSMForumSpider:
             print(f"无法获取用户ID")
 
     def crawl_user_posts_gui(self, user_id: int, max_pages: int = 10):
-        """GUI版本的爬取用户帖子功能（无需交互输入）"""
         print(f"\n[爬取用户帖子] 用户ID: {user_id}")
         print(f"[计划页数] {max_pages} 页")
         print("=" * 50)
 
-        # 首先显示用户完整信息
         user_info = self.get_complete_user_info(user_id)
         if user_info:
             print(f"\n[用户信息]:")
@@ -2732,12 +2450,10 @@ class BDSMForumSpider:
             print(f"[成功] 第 {page} 页获取到 {len(posts)} 个帖子")
             all_posts.extend(posts)
 
-            # 显示当前页的帖子
             for i, post in enumerate(posts, 1):
                 post_index = len(all_posts) - len(posts) + i
                 self.display_post_for_browsing(post, index=post_index)
 
-            # 自动保存当前页的帖子
             if posts:
                 page_saved = 0
                 for post in posts:
@@ -2747,7 +2463,6 @@ class BDSMForumSpider:
                     time.sleep(0.1)
                 print(f"[保存] 第 {page} 页保存了 {page_saved}/{len(posts)} 个帖子")
 
-            # 检查是否还有更多页
             if not result.get("has_more", False):
                 print("[提示] 已到最后一页")
                 break
@@ -2755,7 +2470,6 @@ class BDSMForumSpider:
             page += 1
             time.sleep(0.5)
 
-        # 统计总结果
         print(f"\n{'='*50}")
         print("[完成] 用户帖子爬取完成!")
         print("=" * 50)
@@ -2769,11 +2483,9 @@ class BDSMForumSpider:
         print(f"  保存位置: {self.users_dir}")
 
     def search_and_save_posts_gui(self, keyword, max_pages=3):
-        """GUI版本的搜索帖子功能（无需交互输入）"""
         print(f"\n🔍 搜索帖子: {keyword}")
         print("=" * 40)
 
-        # 创建结果保存器
         saver = ResultSaver(self.search_dir, f"帖子搜索_{keyword}", f"第1页", f"第{max_pages}页")
 
         all_posts = []
@@ -2799,10 +2511,8 @@ class BDSMForumSpider:
             print(f"✅ 第 {page} 页找到 {len(posts)} 个相关帖子")
             all_posts.extend(posts)
 
-            # 显示并自动保存
             page_saved = 0
             for idx, post in enumerate(posts, 1):
-                # 显示帖子内容
                 post_index = len(all_posts) - len(posts) + idx
                 self.display_post_for_browsing(post, post_index)
 
@@ -2828,28 +2538,23 @@ class BDSMForumSpider:
         print(f"💾 保存位置: {self.search_dir}/")
 
     def search_username_gui(self, keyword, max_pages=30, threads=8):
-        """GUI版本的用户名搜索功能（无需交互输入）"""
         print(f"\n🔍 搜索用户名包含 '{keyword}' 的用户")
         print(f"📄 搜索页数: {max_pages}")
         print(f"⚡ 使用 {threads} 个线程")
         print("=" * 60)
 
-        # 创建搜索器
         searcher = UsernamePostSearcher(self, keyword, threads, max_pages, saver=None)
 
         start_time = time.time()
 
-        # 直接使用全自动搜索
         found_users = searcher.search_all()
 
         elapsed = time.time() - start_time
 
-        # 显示统计结果
         print(f"\n✅ 搜索完成！")
         print(f"⏱️  耗时: {elapsed:.1f}秒")
         print(f"👤 找到 {len(found_users)} 个用户")
 
-        # 自动保存找到的用户到搜索目录
         if found_users:
             print("\n💾 正在保存用户信息到搜索目录...")
             saved_count = 0
@@ -2862,37 +2567,31 @@ class BDSMForumSpider:
         return found_users
 
     def search_userid_gui(self, user_id: int):
-        """GUI版本的用户ID搜索功能（无需交互输入）"""
         print(f"\n搜索用户ID: {user_id}")
         print("=" * 60)
 
-        # 获取用户完整信息
         user_info = self.get_complete_user_info(user_id)
 
         if user_info:
             print(f"\n用户: {user_info['name']} (ID:{user_info['id']})")
             self.display_complete_user_info(user_info, prefix="   ")
 
-            # 直接保存到搜索目录
             print(f"\n正在保存用户信息到搜索目录...")
             if self.save_user_info_to_search_dir(user_info):
                 print(f"用户信息已保存到搜索目录: {self.search_dir}/")
 
-            # 生成用户主页链接
             user_url = f"https://dun.sdo.com/#/user/{user_id}"
             print(f"\n用户主页: {user_url}")
         else:
             print(f"未找到用户ID: {user_id}")
 
     def batch_vote_gui(self, start_id, end_id, threads=50):
-        """GUI版本的批量投票功能（无需交互输入）"""
         print(f"\n🚀 批量投票: ID {start_id} 到 {end_id}")
         print(f"⚡ 使用 {threads} 线程")
         print("=" * 60)
 
         task_ids = list(range(start_id, end_id + 1))
 
-        # 创建结果保存器
         saver = ResultSaver(self.votes_dir, f"批量投票", f"ID{start_id}", f"ID{end_id}")
 
         results = {}
@@ -2928,7 +2627,6 @@ class BDSMForumSpider:
                     failed_count += 1
                     results[task_id] = (False, 0, str(e))
 
-        # 使用线程池执行投票
         with ThreadPoolExecutor(max_workers=threads) as executor:
             futures = [executor.submit(process_task, tid) for tid in task_ids]
             for future in as_completed(futures):
@@ -2952,11 +2650,9 @@ class BDSMForumSpider:
         saver.finalize(success_count, failed_count, len(task_ids), elapsed, extra_stats)
 
     def query_attention_gui(self, user_id, page=1):
-        """GUI版本的关注列表查询功能（无需交互输入）"""
         print(f"\n📋 查询用户 {user_id} 的关注列表 (第 {page} 页)")
         print("=" * 60)
 
-        # 获取数据
         result = self.get_attention_list(user_id, page)
 
         if not result:
@@ -2967,18 +2663,14 @@ class BDSMForumSpider:
             print(f"❌ API返回错误: {result.get('msg', '未知错误')}")
             return
 
-        # 解析数据
         parsed_data = self.parse_attention_list(result)
 
         if parsed_data:
-            # 显示数据（统一格式）
             self.print_attention_list(parsed_data, user_id)
 
-            # 自动保存
             self.save_attention_data(result, user_id, page)
             print(f"💾 关注列表已保存到: {self.attention_dir}")
 
-# ---------- 账号管理 ----------
 def load_accounts(spider):
     try:
         with open(spider.accounts_file, "r", encoding="utf-8") as f:
@@ -3045,14 +2737,12 @@ def login_menu(spider, auto_login=True):
     print("🔐 登录系统")
     print("=" * 50)
     
-    # 首先尝试自动登录
     if auto_login:
         auto_token = spider.load_login_state()
         if auto_token:
             print(f"🔑 尝试自动登录...")
             spider.set_token(auto_token)
             
-            # 测试token是否有效
             if test_token_valid(spider, auto_token):
                 print(f"✅ 自动登录成功！")
                 return auto_token
@@ -3147,12 +2837,10 @@ def login_menu(spider, auto_login=True):
 
 
 def test_token_valid(spider, token):
-    """测试Token是否有效"""
     try:
         test_headers = spider.headers.copy()
         test_headers["token"] = token
         
-        # 简单的API测试请求
         r = requests.post(
             f"{spider.base_url}/api.php/circle/list",
             headers=test_headers,
@@ -3203,13 +2891,11 @@ def check_token_status(spider, token):
     else:
         print("📊 未登录或未保存任何账号")
 
-
-# ---------- 主菜单 ----------
 def main():
     print("=" * 60)
     print("📱 BDSM 论坛工具")
     print("=" * 60)
-    spider = BDSMForumSpider(interactive=True)  # 命令行模式，允许交互输入
+    spider = BDSMForumSpider(interactive=True)
     token = login_menu(spider, auto_login=True)
     if not token:
         print("❌ 登录失败，程序退出")
@@ -3222,12 +2908,12 @@ def main():
         print(f"当前账号: {token[:20]}...")
         print(f"数据目录: {spider.data_dir}")
         print("【爬虫】1.批量爬多页  2.爬特定帖  3.爬用户全部  4.手动浏览  5.用户文件")
-        print("【搜索】6.搜索帖子  7.用户名搜索")
-        print("【投票】8.单任务投票 9.批量投票  10.投票文件")
-        print("【关注】11.查询关注列表")
-        print("【账号】12.切换账号 13.管理账号 14.Token状态 15.清除登录状态 16.退出")
+        print("【搜索】6.搜索帖子  7.用户名搜索  8.搜索帖子（新帖优先）")
+        print("【投票】9.单任务投票 10.批量投票  11.投票文件")
+        print("【关注】12.查询关注列表")
+        print("【账号】13.切换账号 14.管理账号 15.Token状态 16.清除登录状态 17.退出")
         print("=" * 60)
-        choice = input("请选择(1-16)：").strip()
+        choice = input("请选择(1-17)：").strip()
         
         if choice == "1":
             start = int(input("开始页码(默认1)：") or 1)
@@ -3257,35 +2943,234 @@ def main():
             spider.search_username()
             
         elif choice == "8":
+            keyword = input("请输入搜索关键词: ").strip()
+            if not keyword:
+                print("❌ 请输入搜索关键词")
+                continue
+            
+            try:
+                page_input = input("请输入搜索页数 (默认1页): ").strip()
+                if not page_input:
+                    max_pages = 1
+                else:
+                    max_pages = int(page_input)
+                    max_pages = max(1, min(500, max_pages))
+            except:
+                max_pages = 1
+                print("⚠️  输入无效，使用默认1页")
+            
+            print(f"\n🔍 搜索关键词: '{keyword}'")
+            print(f"📄 搜索页数: {max_pages}页（优先保存新发布的帖子）")
+            print("=" * 50)
+            
+            saver = ResultSaver(spider.search_dir, f"新帖优先搜索_{keyword}", f"第1页", f"第{max_pages}页")
+            
+            all_posts = []
+            total_saved = 0
+            start_time = time.time()
+            
+            for page in range(1, max_pages + 1):
+                print(f"\n📄 正在搜索第 {page} 页...")
+                result = spider.search_posts_with_page(keyword, page)
+                
+                if not result or not result.get("success"):
+                    print(f"❌ 第 {page} 页搜索失败: {result.get('error', '未知错误')}")
+                    saver.save_record(f"第{page}页", "❌", f"搜索失败: {result.get('error', '未知错误')}")
+                    break
+                    
+                posts = result.get("data", [])
+                if not posts:
+                    print(f"📭 第 {page} 页没有找到相关帖子")
+                    saver.save_record(f"第{page}页", "📭", "没有找到相关帖子")
+                    if page == 1:
+                        break
+                    else:
+                        break
+                
+                print(f"✅ 第 {page} 页找到 {len(posts)} 个相关帖子")
+                saver.save_record(f"第{page}页", "✅", f"找到{len(posts)}个帖子")
+                all_posts.extend(posts)
+                
+                print(f"\n📋 第 {page} 页搜索结果（新发布在前）:")
+                print("=" * 60)
+                
+                for i, post in enumerate(posts, 1):
+                    post_id = post.get("id")
+                    create_time = post.get("create_time", 0)
+                    create_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(create_time))
+                    
+                    user_info = post.get("user", {})
+                    user_id = user_info.get("id") or post.get("user_id")
+                    username = user_info.get("user_name") or f"用户_{user_id}"
+                    
+                    is_new = False
+                    if create_time > (time.time() - 30 * 24 * 60 * 60):
+                        is_new = True
+                    
+                    new_mark = "🆕" if is_new else "  "
+                    print(f"{new_mark}[{i}] 帖子ID: {post_id} | 用户: {username}")
+                    print(f"   发布时间: {create_time_str} {'（新发布）' if is_new else ''}")
+                    
+                    content = post.get("content") or post.get("title", "无内容")
+                    if len(content) > 100:
+                        content = content[:100] + "..."
+                    print(f"   内容: {content}")
+                    print(f"   📊 浏览: {post.get('onclick', 0)} | 赞: {post.get('dig_count', 0)} | 评论: {post.get('com_count', 0)}")
+                    print(f"   {'-'*40}")
+                
+                if posts:
+                    print(f"\n💾 正在处理第 {page} 页的帖子保存...")
+                    
+                    print("🆕 优先保存新发布的帖子（最近30天内）:")
+                    new_posts = []
+                    other_posts = []
+                    
+                    for post in posts:
+                        create_time = post.get("create_time", 0)
+                        if create_time > (time.time() - 30 * 24 * 60 * 60):
+                            new_posts.append(post)
+                        else:
+                            other_posts.append(post)
+                    
+                    if new_posts:
+                        print(f"   发现 {len(new_posts)} 个新帖子，正在自动保存...")
+                        for post in new_posts:
+                            post_id = post.get("id")
+                            create_time = post.get("create_time", 0)
+                            create_time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(create_time))
+                            
+                            user_info = post.get("user", {})
+                            user_id = user_info.get("id") or post.get("user_id")
+                            if user_id:
+                                complete_user_info = spider.get_complete_user_info(user_id)
+                                if complete_user_info:
+                                    if spider.save_post_for_user_crawl(post, complete_user_info, manual_mode=False):
+                                        total_saved += 1
+                                        saver.save_record(f"新帖{post_id}", "✅", f"自动保存（发布于{create_time_str}）")
+                                    else:
+                                        saver.save_record(f"新帖{post_id}", "❌", "保存失败")
+                            time.sleep(0.2)
+                        
+                        print(f"   ✅ 新帖子已自动保存 {len(new_posts)} 个")
+                    
+                    if other_posts:
+                        print(f"\n📋 还有 {len(other_posts)} 个较旧的帖子")
+                        save_choice = input("是否保存较旧的帖子？(y=全部保存/s=选择保存/n=跳过): ").strip().lower()
+                        
+                        if save_choice == 'y':
+                            print(f"   正在自动保存 {len(other_posts)} 个旧帖子...")
+                            for post in other_posts:
+                                post_id = post.get("id")
+                                user_info = post.get("user", {})
+                                user_id = user_info.get("id") or post.get("user_id")
+                                if user_id:
+                                    complete_user_info = spider.get_complete_user_info(user_id)
+                                    if complete_user_info:
+                                        if spider.save_post_for_user_crawl(post, complete_user_info, manual_mode=False):
+                                            total_saved += 1
+                                            saver.save_record(f"旧帖{post_id}", "✅", "自动保存")
+                                time.sleep(0.2)
+                            print(f"   ✅ 旧帖子已保存 {len(other_posts)} 个")
+                            
+                        elif save_choice == 's':
+                            print("\n🔍 请选择要保存的帖子:")
+                            selected = input(f"输入第 {page} 页的帖子编号（用逗号分隔，如 1,3,5）: ").strip()
+                            
+                            if selected:
+                                try:
+                                    indices = [int(idx.strip()) - 1 for idx in selected.split(',') if idx.strip().isdigit()]
+                                    selected_count = 0
+                                    for idx in indices:
+                                        if 0 <= idx < len(other_posts):
+                                            post = other_posts[idx]
+                                            post_id = post.get("id")
+                                            user_info = post.get("user", {})
+                                            user_id = user_info.get("id") or post.get("user_id")
+                                            if user_id:
+                                                complete_user_info = spider.get_complete_user_info(user_id)
+                                                if complete_user_info:
+                                                    if spider.save_post_for_user_crawl(post, complete_user_info, manual_mode=True):
+                                                        selected_count += 1
+                                                        total_saved += 1
+                                                        saver.save_record(f"旧帖{post_id}", "✅", "手动选择保存")
+                                            time.sleep(0.3)
+                                    print(f"   ✅ 选择了 {selected_count}/{len(indices)} 个帖子保存")
+                                except:
+                                    print("❌ 输入格式错误")
+                                    saver.save_record(f"第{page}页", "❌", "输入格式错误")
+                        
+                        else:
+                            print("⏭️  跳过保存较旧帖子")
+                            saver.save_record(f"第{page}页", "⏭️", f"跳过{len(other_posts)}个旧帖子")
+                    else:
+                        saver.save_record(f"第{page}页", "📊", f"本页无旧帖子")
+                
+                if page < max_pages:
+                    continue_choice = input(f"\n是否继续搜索第 {page+1} 页？(y/n): ").strip().lower()
+                    if continue_choice != 'y':
+                        print("⏹️  停止搜索")
+                        saver.save_record("搜索", "⏹️", f"用户在第{page}页停止")
+                        break
+                    
+                    time.sleep(1)
+            
+            elapsed = time.time() - start_time
+            print(f"\n" + "=" * 60)
+            print("🔍 搜索完成！")
+            print("=" * 60)
+            print(f"📊 统计:")
+            print(f"  总搜索页数: {min(page, max_pages)}/{max_pages}")
+            print(f"  找到帖子总数: {len(all_posts)}")
+            print(f"  保存帖子总数: {total_saved}")
+            
+            if all_posts:
+                save_rate = (total_saved / len(all_posts)) * 100
+                print(f"  保存率: {save_rate:.1f}%")
+            
+            print(f"  ⏱️  耗时: {elapsed:.1f}秒")
+            
+            extra_stats = {
+                "搜索关键词": keyword,
+                "实际搜索页数": f"{min(page, max_pages)}/{max_pages}",
+                "找到帖子数": len(all_posts),
+                "保存帖子数": total_saved,
+                "保存率": f"{save_rate:.1f}%" if all_posts else "0%"
+            }
+            
+            saver.finalize(total_saved, len(all_posts)-total_saved, len(all_posts), elapsed, extra_stats)
+            print(f"\n📋 搜索记录已保存: {saver.filepath}")
+            print(f"💾 帖子数据保存在: {spider.users_dir}/")
+            
+        elif choice == "9":
             tid = int(input("投票任务ID：") or 0)
             if tid:
                 spider.vote_single_test(tid)
                 
-        elif choice == "9":
+        elif choice == "10":
             spider.batch_vote()
             
-        elif choice == "10":
+        elif choice == "11":
             spider.show_vote_files()
             
-        elif choice == "11":
+        elif choice == "12":
             spider.query_attention_list()
             
-        elif choice == "12":
+        elif choice == "13":
             new_token = login_menu(spider, auto_login=False)
             if new_token:
                 token = new_token
                 
-        elif choice == "13":
+        elif choice == "14":
             manage_accounts(spider)
             
-        elif choice == "14":
+        elif choice == "15":
             check_token_status(spider, token)
             
-        elif choice == "15":
+        elif choice == "16":
             spider.clear_login_state()
             print("🗑️  登录状态已清除，下次启动需要重新登录")
             
-        elif choice == "16":
+        elif choice == "17":
             print(f"👋 再见！数据保存在 {spider.data_dir}/")
             break
             
@@ -3293,4 +3178,4 @@ def main():
             print("❌ 无效选择")
 
 if __name__ == "__main__":
-    main()
+    main(
