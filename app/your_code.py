@@ -229,7 +229,7 @@ class BDSMForumSpider:
         # 列表接口默认 payload
         self.payload_template = {
             "page": 1,
-            "order": {},
+            "order": {"create_time": "desc"},  # 按创建时间倒序（由新到旧）
             "append": {
                 "1": "files",
                 "3": "is_dig",
@@ -1314,7 +1314,7 @@ class BDSMForumSpider:
 
     def get_user_posts(self, user_id: int, page: int = 1):
         payload = {
-            "page": page, "order": {}, "kw": "",
+            "page": page, "order": {"create_time": "desc"}, "kw": "",
             "append": self.payload_template["append"],
             "with_count": ["comments", "favos", "digs"],
             "user_id": user_id
@@ -1507,13 +1507,26 @@ class BDSMForumSpider:
         """保存用户帖子（修复版）"""
         try:
             post_id = post_data.get("id")
-            user_id = user_info.get("id") or post_data.get("user_id")
-            
+
+            # 安全处理 user_info（可能是None、列表或字典）
+            if user_info is None:
+                user_info = {}
+            elif isinstance(user_info, list):
+                user_info = user_info[0] if user_info else {}
+
+            user_id = user_info.get("id") if isinstance(user_info, dict) else None
             if not user_id:
-                print(f"❌ 帖子 {post_id} 缺少用户ID")
+                user_id = post_data.get("user_id")
+
+            if not user_id:
+                print(f"帖子 {post_id} 缺少用户ID")
                 return False
-            
-            username = user_info.get("user_name") or user_info.get("name") or f"用户_{user_id}"
+
+            username = ""
+            if isinstance(user_info, dict):
+                username = user_info.get("user_name") or user_info.get("name") or f"用户_{user_id}"
+            else:
+                username = f"用户_{user_id}"
             
             # 使用用户名而不是"用户_ID"
             safe_name = INVALID_CHARS.sub("_", username)[:20] if username else f"用户_{user_id}"

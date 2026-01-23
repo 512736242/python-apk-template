@@ -151,7 +151,7 @@ class LogTextInput(TextInput):
         self.background_color = COLORS['card']
         self.foreground_color = COLORS['text']
         self.cursor_color = COLORS['primary']
-        self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
+        # 不指定字体，使用系统默认字体以支持emoji显示
         self.font_size = dp(13)
         self.padding = [dp(10), dp(8)]
 
@@ -163,60 +163,82 @@ class LogDetailPopup(Popup):
         self.title = '日志详情'
         self.title_color = COLORS['text']
         self.title_font = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
-        self.size_hint = (0.95, 0.8)
+        self.size_hint = (0.95, 0.85)
         self.background_color = COLORS['card']
         self.separator_color = COLORS['primary']
+        self._urls = urls or []
 
-        content = BoxLayout(orientation='vertical', spacing=dp(10), padding=dp(10))
+        content = BoxLayout(orientation='vertical', spacing=dp(8), padding=dp(10))
 
         # 日志内容（可选择复制）
-        scroll = ScrollView(size_hint_y=0.75)
+        log_scroll = ScrollView(size_hint_y=0.6)
         self.log_input = LogTextInput(
             text=log_text,
             size_hint_y=None
         )
         self.log_input.bind(minimum_height=self.log_input.setter('height'))
-        scroll.add_widget(self.log_input)
-        content.add_widget(scroll)
+        log_scroll.add_widget(self.log_input)
+        content.add_widget(log_scroll)
 
-        # 链接按钮区
+        # 链接列表区（可点击的超链接文本）
         if urls:
-            link_scroll = ScrollView(size_hint_y=None, height=dp(50))
-            link_layout = BoxLayout(size_hint_y=None, height=dp(45), spacing=dp(8))
-            for i, url in enumerate(urls[:5]):  # 最多显示5个链接
-                short_url = url[:30] + '...' if len(url) > 30 else url
-                btn = StyledButton(
-                    text=f'链接{i+1}',
-                    size_hint_x=None,
-                    width=dp(70),
-                    bg_color=COLORS['secondary']
+            link_header = StyledLabel(
+                text=f'检测到 {len(urls)} 个链接 (点击打开):',
+                size_hint_y=None,
+                height=dp(25),
+                font_size=dp(12),
+                color=COLORS['text_dim']
+            )
+            content.add_widget(link_header)
+
+            link_scroll = ScrollView(size_hint_y=0.25)
+            link_list = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+            link_list.bind(minimum_height=link_list.setter('height'))
+
+            for i, url in enumerate(urls):
+                # 用Label显示可点击的链接（markup模式）
+                link_label = Label(
+                    text=f'[ref={url}][color=4fc3f7][u]{url}[/u][/color][/ref]',
+                    markup=True,
+                    size_hint_y=None,
+                    height=dp(28),
+                    font_size=dp(11),
+                    font_name=DEFAULT_FONT if DEFAULT_FONT else 'Roboto',
+                    halign='left',
+                    valign='middle'
                 )
-                btn.url = url
-                btn.bind(on_press=self._open_url)
-                link_layout.add_widget(btn)
-            link_scroll.add_widget(link_layout)
+                link_label.bind(size=link_label.setter('text_size'))
+                link_label.bind(on_ref_press=self._on_link_press)
+                link_list.add_widget(link_label)
+
+            link_scroll.add_widget(link_list)
             content.add_widget(link_scroll)
 
         # 按钮行
         btn_row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
 
-        copy_btn = StyledButton(text='复制全部', bg_color=COLORS['secondary'])
+        copy_btn = StyledButton(text='复制日志', bg_color=COLORS['secondary'])
         copy_btn.bind(on_press=self._copy_text)
+
+        copy_urls_btn = StyledButton(text='复制链接', bg_color=COLORS['secondary'])
+        copy_urls_btn.bind(on_press=self._copy_urls)
 
         close_btn = StyledButton(text='关闭', bg_color=COLORS['primary'])
         close_btn.bind(on_press=self.dismiss)
 
         btn_row.add_widget(copy_btn)
+        btn_row.add_widget(copy_urls_btn)
         btn_row.add_widget(close_btn)
         content.add_widget(btn_row)
 
         self.content = content
         self._log_text = log_text
 
-    def _open_url(self, instance):
+    def _on_link_press(self, instance, ref):
+        """点击链接时打开浏览器"""
         try:
             import webbrowser
-            webbrowser.open(instance.url)
+            webbrowser.open(ref)
         except Exception as e:
             print(f'打开链接失败: {e}')
 
@@ -225,7 +247,18 @@ class LogDetailPopup(Popup):
             from kivy.core.clipboard import Clipboard
             Clipboard.copy(self._log_text)
             instance.text = '已复制!'
-            Clock.schedule_once(lambda dt: setattr(instance, 'text', '复制全部'), 1.5)
+            Clock.schedule_once(lambda dt: setattr(instance, 'text', '复制日志'), 1.5)
+        except Exception as e:
+            print(f'复制失败: {e}')
+
+    def _copy_urls(self, instance):
+        """复制所有链接"""
+        try:
+            from kivy.core.clipboard import Clipboard
+            if self._urls:
+                Clipboard.copy('\n'.join(self._urls))
+                instance.text = '已复制!'
+                Clock.schedule_once(lambda dt: setattr(instance, 'text', '复制链接'), 1.5)
         except Exception as e:
             print(f'复制失败: {e}')
 
@@ -1131,6 +1164,9 @@ class BDSMApp(App):
     def init_app(self, dt):
         """延迟初始化"""
         try:
+            # 先申请权限
+            self._request_android_permissions()
+
             from app.your_code import BDSMForumSpider, test_token_valid
 
             # 确定数据保存目录
@@ -1161,22 +1197,32 @@ class BDSMApp(App):
         try:
             from kivy.utils import platform
             if platform == 'android':
-                # 尝试申请存储权限
-                self._request_android_permissions()
-                # 使用外部存储目录
-                sdcard_dir = "/sdcard/bdsm数据"
-                try:
-                    os.makedirs(sdcard_dir, exist_ok=True)
-                    # 测试是否可写
-                    test_file = os.path.join(sdcard_dir, ".test_write")
-                    with open(test_file, 'w') as f:
-                        f.write("test")
-                    os.remove(test_file)
-                    print(f"使用外部存储: {sdcard_dir}")
-                    return sdcard_dir
-                except Exception as e:
-                    print(f"外部存储不可用: {e}，使用应用内目录")
-                    return os.path.join(self.user_data_dir, "bdsm_data")
+                # 尝试多个外部存储路径
+                possible_dirs = [
+                    "/sdcard/bdsm数据",
+                    "/storage/emulated/0/bdsm数据",
+                    "/storage/sdcard0/bdsm数据",
+                ]
+
+                for sdcard_dir in possible_dirs:
+                    try:
+                        os.makedirs(sdcard_dir, exist_ok=True)
+                        # 测试是否可写
+                        test_file = os.path.join(sdcard_dir, ".test_write")
+                        with open(test_file, 'w') as f:
+                            f.write("test")
+                        os.remove(test_file)
+                        print(f"使用外部存储: {sdcard_dir}")
+                        return sdcard_dir
+                    except Exception as e:
+                        print(f"目录 {sdcard_dir} 不可用: {e}")
+                        continue
+
+                # 所有外部目录都失败，使用应用私有目录但打印警告
+                fallback_dir = os.path.join(self.user_data_dir, "bdsm_data")
+                print(f"警告: 外部存储不可用，使用应用目录: {fallback_dir}")
+                print("请在系统设置中授予存储权限")
+                return fallback_dir
             else:
                 # 非Android平台使用应用数据目录
                 return os.path.join(self.user_data_dir, "bdsm_data")
@@ -1188,19 +1234,43 @@ class BDSMApp(App):
         """申请Android存储权限"""
         try:
             from android.permissions import request_permissions, Permission, check_permission
+            from android import api_version
 
-            # 检查是否已有权限
-            if not check_permission(Permission.WRITE_EXTERNAL_STORAGE):
-                print("申请存储权限...")
-                request_permissions([
-                    Permission.WRITE_EXTERNAL_STORAGE,
-                    Permission.READ_EXTERNAL_STORAGE
-                ])
-                # 等待权限结果
+            permissions_to_request = []
+
+            # Android 13+ 需要细分的媒体权限
+            if api_version >= 33:
+                permissions_to_request = [
+                    Permission.READ_MEDIA_IMAGES,
+                    Permission.READ_MEDIA_VIDEO,
+                    Permission.READ_MEDIA_AUDIO,
+                ]
+            else:
+                # Android 12 及以下
+                if not check_permission(Permission.WRITE_EXTERNAL_STORAGE):
+                    permissions_to_request.append(Permission.WRITE_EXTERNAL_STORAGE)
+                if not check_permission(Permission.READ_EXTERNAL_STORAGE):
+                    permissions_to_request.append(Permission.READ_EXTERNAL_STORAGE)
+
+            if permissions_to_request:
+                print(f"申请存储权限: {permissions_to_request}")
+                request_permissions(permissions_to_request)
                 import time
-                time.sleep(1)
+                time.sleep(2)  # 增加等待时间
+
+            # Android 11+ 尝试请求管理所有文件权限
+            if api_version >= 30:
+                try:
+                    from android import mActivity
+                    from jnius import autoclass
+                    Environment = autoclass('android.os.Environment')
+                    if not Environment.isExternalStorageManager():
+                        print("需要 MANAGE_EXTERNAL_STORAGE 权限")
+                        print("请在设置中手动授予'所有文件访问'权限")
+                except Exception as e:
+                    print(f"检查MANAGE_EXTERNAL_STORAGE失败: {e}")
+
         except ImportError:
-            # 非Android平台或没有android模块
             pass
         except Exception as e:
             print(f"申请权限失败: {e}")
