@@ -151,7 +151,7 @@ class LogTextInput(TextInput):
         self.background_color = COLORS['card']
         self.foreground_color = COLORS['text']
         self.cursor_color = COLORS['primary']
-        # 不指定字体，使用系统默认字体以支持emoji显示
+        self.font_name = DEFAULT_FONT if DEFAULT_FONT else 'Roboto'
         self.font_size = dp(13)
         self.padding = [dp(10), dp(8)]
 
@@ -1088,10 +1088,28 @@ class MainScreen(BoxLayout):
 
         threading.Thread(target=wrapper, daemon=True).start()
 
+    # Emoji到文字的映射表（中文字体不支持emoji）
+    EMOJI_MAP = {
+        '✅': '[OK]', '❌': '[X]', '⚠️': '[!]', '🔍': '[搜]',
+        '👤': '[用户]', '🎂': '[年龄]', '📏': '[身高]', '📍': '[地区]',
+        '⏰': '[时间]', '📝': '[内容]', '📊': '[统计]', '📁': '[文件]',
+        '💾': '[保存]', '🚀': '[开始]', '⚡': '[快]', '🔗': '[链接]',
+        '📋': '[列表]', '📄': '[页]', '🔑': '[密钥]', '📥': '[下载]',
+        '🎯': '[目标]', '📭': '[空]', '⏹️': '[停]', '🖼️': '[图]',
+        '⏱️': '[耗时]', '⚧️': '[性别]', '🆔': '[ID]', '⏭️': '[跳过]',
+    }
+
+    def _replace_emoji(self, text):
+        """将emoji替换为文字标记"""
+        for emoji, replacement in self.EMOJI_MAP.items():
+            text = text.replace(emoji, replacement)
+        return text
+
     @mainthread
     def log(self, *args, **kwargs):
         """日志输出 - 使用缓冲区批量更新，避免UI卡顿"""
         text = ' '.join(str(a) for a in args)
+        text = self._replace_emoji(text)  # 替换emoji为文字
         self._log_buffer.append(text)
 
         # 安排批量更新，避免频繁刷新UI
