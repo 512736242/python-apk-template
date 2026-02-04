@@ -2977,166 +2977,343 @@ class BDSMForumSpider:
 
     def search_and_save_posts_gui(self, keyword, max_posts=15, threads=10):
         """
-        搜索帖子的GUI版本 - 简洁并发版
+        搜索帖子的GUI版本 - 持续搜索直到找到足够数量的匹配
+        支持最大搜索50000个帖子
         """
-        print(f"\n搜索帖子 - 关键词: {keyword} | 目标: {max_posts}条 | 线程: {threads}")
+        print(f"\n🔍 搜索帖子 - 关键词: {keyword} | 目标: {max_posts}条 | 线程: {threads}")
         print("=" * 60)
         
         start_time = time.time()
         
-        # 限制线程数
-        actual_threads = min(max(1, threads), 10)
+        # 限制线程数（最大500个线程）
+        actual_threads = min(max(1, threads), 500)
         
         # 并发批量获取
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import copy
         
+        # 存储结果的列表
         all_matched_posts = []
         current_page = 1
-        batch_size = actual_threads
+        batch_size = actual_threads  # 每批搜索的页面数
+        
+        # 统计信息
+        total_searched_pages = 0      # 总共搜索了多少页
+        total_posts_scanned = 0       # 总共扫描了多少条帖子
+        pages_with_data = 0           # 有多少页有数据
+        pages_with_matches = 0        # 有多少页有匹配
+        last_progress_time = time.time()  # 上次显示进度的时间
         
         def fetch_single_page(page_num):
-            """并发获取单个页面"""
+            """并发获取单个页面的数据"""
             try:
                 payload = copy.deepcopy(self.payload_template)
                 payload["page"] = page_num
-                payload["kw"] = ""
+                payload["kw"] = ""  # 清空关键词，本地筛选
                 
                 r = requests.post(f"{self.base_url}/api.php/circle/list",
-                                headers=self.headers, json=payload, timeout=10)
+                                headers=self.headers, json=payload, timeout=15)
                 if r.status_code == 200:
                     data = r.json()
                     if data.get("code") == 1:
                         posts = data.get("data", {}).get("data", [])
+                        total_in_page = len(posts)
                         
-                        # 本地筛选
+                        # 本地筛选：检查帖子是否包含关键词
                         matched = []
                         for post in posts:
                             if keyword in post.get('title', '') or keyword in post.get('content', ''):
-                                post['_source_page'] = page_num
+                                post['_source_page'] = page_num  # 标记来源页面
                                 matched.append(post)
                         
-                        return matched
-            except:
-                pass
-            return []
+                        return {
+                            "page": page_num,
+                            "posts": posts,
+                            "matched": matched,
+                            "total_in_page": total_in_page,
+                            "success": True,
+                            "has_data": len(posts) > 0
+                        }
+                    else:
+                        return {
+                            "page": page_num,
+                            "posts": [],
+                            "matched": [],
+                            "total_in_page": 0,
+                            "success": False,
+                            "has_data": False,
+                            "error": data.get("msg", "API返回错误")
+                        }
+                else:
+                    return {
+                        "page": page_num,
+                        "posts": [],
+                        "matched": [],
+                        "total_in_page": 0,
+                        "success": False,
+                        "has_data": False,
+                        "error": f"HTTP {r.status_code}"
+                    }
+            except Exception as e:
+                return {
+                    "page": page_num,
+                    "posts": [],
+                    "matched": [],
+                    "total_in_page": 0,
+                    "success": False,
+                    "has_data": False,
+                    "error": f"请求异常: {str(e)}"
+                }
         
-        # 并发获取直到收集足够匹配
-        while len(all_matched_posts) < max_posts:
-            with ThreadPoolExecutor(max_workers=min(actual_threads, 5)) as executor:
+        # ========== 搜索控制参数 ==========
+        consecutive_empty_pages = 0       # 连续没有数据的页面数
+        max_consecutive_empty = 50         # 连续50页没有数据就停止
+        max_total_pages = 50000           # 最多搜索50000页（足够找5万个帖子）
+        batch_number = 1                  # 当前批次号
+        last_batch_stats_time = time.time()  # 上次显示批次统计的时间
+        
+        print(f"🚀 开始搜索... (最多搜索 {max_total_pages} 页)")
+        print(f"📦 每批搜索 {batch_size} 页")
+        print(f"🎯 目标匹配: {max_posts} 个帖子")
+        print("-" * 60)
+        
+        # ========== 主搜索循环 ==========
+        while (len(all_matched_posts) < max_posts and 
+               current_page <= max_total_pages and
+               consecutive_empty_pages < max_consecutive_empty):
+            
+            # 每3秒显示一次进度
+            current_time = time.time()
+            if current_time - last_batch_stats_time >= 3.0:  # 每3秒显示一次
+                last_batch_stats_time = current_time
+                print(f"\n📈 实时进度:")
+                print(f"  当前页面: 第 {current_page} 页")
+                print(f"  已搜索: {total_searched_pages} 页")
+                print(f"  扫描帖子: {total_posts_scanned} 条")
+                print(f"  找到匹配: {len(all_matched_posts)}/{max_posts} 个")
+                if len(all_matched_posts) > 0:
+                    progress = (len(all_matched_posts) / max_posts) * 100
+                    print(f"  完成进度: {progress:.1f}%")
+            
+            print(f"\n📥 第{batch_number}批: 搜索第{current_page}~{current_page+batch_size-1}页...")
+            
+            # 并发获取一批页面
+            with ThreadPoolExecutor(max_workers=min(actual_threads, 500)) as executor:
                 futures = [executor.submit(fetch_single_page, p) 
                           for p in range(current_page, current_page + batch_size)]
                 
+                # 初始化本批统计数据
+                batch_total_posts = 0       # 本批总帖子数
+                batch_matched_posts = 0     # 本批匹配数
+                batch_has_data = False      # 本批是否有数据
+                
                 for future in as_completed(futures):
-                    matched_posts = future.result()
-                    if matched_posts:
-                        all_matched_posts.extend(matched_posts)
+                    result = future.result()
+                    
+                    # 更新全局统计
+                    total_searched_pages += 1
+                    total_posts_scanned += result["total_in_page"]
+                    
+                    if result["has_data"]:
+                        pages_with_data += 1
+                        consecutive_empty_pages = 0  # 重置空页面计数器
+                        batch_has_data = True
+                        
+                        if result["matched"]:
+                            pages_with_matches += 1
+                            batch_matched_posts += len(result["matched"])
+                            all_matched_posts.extend(result["matched"])
+                        
+                        batch_total_posts += result["total_in_page"]
+                    else:
+                        consecutive_empty_pages += 1
+                    
+                    # 显示每页详情（只显示有匹配的页面）
+                    if result["success"] and result["matched"]:
+                        print(f"  ✅ 第{result['page']}页: {len(result['matched'])}个匹配 (共{result['total_in_page']}条)")
             
-            current_page += batch_size
+            # 显示本批统计
+            print(f"  📊 本批统计: {batch_total_posts}条帖子 | {batch_matched_posts}个匹配")
+            print(f"  🎯 累计匹配: {len(all_matched_posts)}/{max_posts}")
             
-            if current_page > 50:  # 安全限制
+            # 如果没有数据，说明可能到了数据边界
+            if not batch_has_data:
+                print(f"  ⚠️  本批页面没有数据，连续空页: {consecutive_empty_pages}/{max_consecutive_empty}")
+            else:
+                current_page += batch_size
+            
+            batch_number += 1
+            
+            # 每10批显示一次详细报告
+            if batch_number % 10 == 0:
+                progress_percent = min(100, (len(all_matched_posts) / max_posts) * 100)
+                pages_percent = min(100, (current_page / max_total_pages) * 100)
+                print(f"\n📋 详细报告 (第{batch_number}批):")
+                print(f"  搜索页数: {total_searched_pages}/{max_total_pages} ({pages_percent:.1f}%)")
+                print(f"  匹配进度: {len(all_matched_posts)}/{max_posts} ({progress_percent:.1f}%)")
+                print(f"  扫描帖子: {total_posts_scanned} 条")
+                print(f"  匹配率: {(len(all_matched_posts)/total_posts_scanned*100 if total_posts_scanned>0 else 0):.2f}%")
+                print(f"  数据页面: {pages_with_data} 页")
+                print(f"  匹配页面: {pages_with_matches} 页")
+            
+            # 检查停止条件：连续多页没有数据
+            if consecutive_empty_pages >= max_consecutive_empty:
+                print(f"\n🛑 连续 {consecutive_empty_pages} 页没有数据，停止搜索")
                 break
+            
+        # ========== 搜索完成统计 ==========
+        print(f"\n{'='*60}")
+        print("✅ 搜索完成!")
+        print("=" * 60)
         
         total_matched = len(all_matched_posts)
+        total_time = time.time() - start_time
+        
+        print(f"📊 最终统计:")
+        print(f"  搜索页数: {total_searched_pages} 页")
+        print(f"  扫描帖子: {total_posts_scanned} 条")
+        print(f"  有数据页面: {pages_with_data} 页")
+        print(f"  有匹配页面: {pages_with_matches} 页")
+        print(f"  总匹配数: {total_matched} 个")
+        print(f"  目标数量: {max_posts} 个")
+        print(f"  搜索耗时: {total_time:.1f} 秒")
+        
+        if total_posts_scanned > 0:
+            match_rate = (total_matched / total_posts_scanned) * 100
+            print(f"  整体匹配率: {match_rate:.2f}%")
+        
+        if total_time > 0:
+            pages_per_sec = total_searched_pages / total_time
+            posts_per_sec = total_posts_scanned / total_time
+            print(f"  搜索速度: {pages_per_sec:.1f} 页/秒 | {posts_per_sec:.1f} 条/秒")
+        
+        if total_matched < max_posts:
+            print(f"⚠️  只找到 {total_matched} 个匹配，未达到目标 {max_posts}")
+            if consecutive_empty_pages >= max_consecutive_empty:
+                print(f"  💡 原因: 连续多页没有数据，可能已搜索到数据边界")
+            elif current_page > max_total_pages:
+                print(f"  💡 原因: 已达到最大搜索页数限制")
+        else:
+            print(f"🎉 成功找到目标数量的匹配!")
         
         if total_matched == 0:
-            print("未找到匹配的帖子")
+            print("❌ 未找到匹配的帖子")
             return 0, 0
         
-        # 限制显示数量
+        # ========== 显示和保存帖子 ==========
+        # 限制实际显示的数量（不超过目标数量）
         display_posts = all_matched_posts[:max_posts]
         display_count = len(display_posts)
-        saved_count = 0
+        saved_count = 0  # 已保存的帖子数
         
-        print(f"\n找到 {display_count} 个匹配帖子:\n")
+        print(f"\n📄 显示 {display_count} 个匹配帖子:\n")
         
-        # 显示帖子内容（简洁版）
-        for i, post in enumerate(display_posts, 1):
-            post_id = post.get('id')
-            user_info = post.get("user", {})
-            user_id = user_info.get("id") or post.get("user_id")
+        # 分批显示，每批20个
+        posts_per_batch = 15
+        for batch_start in range(0, display_count, posts_per_batch):
+            batch_end = min(batch_start + posts_per_batch, display_count)
+            current_batch = display_posts[batch_start:batch_end]
             
-            print(f"[{i}] 帖子ID: {post_id}")
-            
-            if user_id:
-                complete_user_info = self.get_complete_user_info(user_id)
-                if complete_user_info:
-                    print(f"   用户: {complete_user_info.get('name', f'用户_{user_id}')} (ID: {user_id})")
-                    
-                    if complete_user_info.get('age'):
-                        print(f"   年龄: {complete_user_info['age']}岁", end="")
-                        if complete_user_info.get('birthday'):
-                            print(f" | 生日: {complete_user_info['birthday']}")
-                        else:
-                            print()
-                    
-                    if complete_user_info.get('sex_text'):
-                        print(f"   性别: {complete_user_info['sex_text']}", end="")
-                        if complete_user_info.get('sex_o_text'):
-                            print(f" | 性取向: {complete_user_info['sex_o_text']}", end="")
-                        if complete_user_info.get('sex_p_text'):
-                            print(f" | 角色: {complete_user_info['sex_p_text']}", end="")
-                        print()
-                    
-                    if complete_user_info.get('height'):
-                        print(f"   身高: {complete_user_info['height']}cm", end="")
-                        if complete_user_info.get('weight'):
-                            print(f" | 体重: {complete_user_info['weight']}kg")
-                        else:
-                            print()
-                    
-                    if complete_user_info.get('country'):
-                        print(f"   地区: {complete_user_info['country']}")
-                    
-                    if complete_user_info.get('last_time'):
-                        print(f"   最后在线: {complete_user_info['last_time']}")
-            
-            # 发布时间
-            if post.get('create_time'):
-                create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(post.get("create_time", 0)))
-                print(f"   发布时间: {create_time}")
-            
-            # 帖子内容
-            content = post.get('content') or post.get('title') or '[无内容]'
-            print(f"   内容: {content}")
-            
-            # 统计信息
-            print(f"   浏览: {post.get('onclick', 0)} | 赞: {post.get('dig_count', 0)} | 评论: {post.get('com_count', 0)}")
-            
-            # 图片信息
-            files = post.get("files", [])
-            if isinstance(files, list) and files:
-                image_urls = []
-                for f in files:
-                    url = ""
-                    if isinstance(f, dict):
-                        url = f.get('url', '')
-                    elif isinstance(f, str) and f.startswith('http'):
-                        url = f
-                    
-                    if url and url.startswith('http'):
-                        image_urls.append(url)
-                
-                if image_urls:
-                    print(f"   图片: {len(image_urls)}张")
-                    for j, url in enumerate(image_urls, 1):
-                        print(f"      {j}. {url}")
-            
-            # 自动保存
-            if user_id and complete_user_info:
-                if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=i):
-                    saved_count += 1
-                    print("   [已保存]")
-                else:
-                    print("   [保存失败]")
-            
+            print(f"📋 显示第 {batch_start+1}-{batch_end} 个帖子:")
             print("-" * 50)
-            time.sleep(0.05)
+            
+            for i, post in enumerate(current_batch, 1):
+                index = batch_start + i
+                post_id = post.get('id')
+                user_info = post.get("user", {})
+                user_id = user_info.get("id") or post.get("user_id")
+                
+                print(f"[{index}] 帖子ID: {post_id}")
+                
+                # 获取并显示用户信息
+                if user_id:
+                    complete_user_info = self.get_complete_user_info(user_id)
+                    if complete_user_info:
+                        print(f"   用户: {complete_user_info.get('name', f'用户_{user_id}')} (ID: {user_id})")
+                        
+                        # 显示详细信息
+                        if complete_user_info.get('age'):
+                            print(f"   年龄: {complete_user_info['age']}岁", end="")
+                            if complete_user_info.get('birthday'):
+                                print(f" | 生日: {complete_user_info['birthday']}")
+                            else:
+                                print()
+                        
+                        if complete_user_info.get('sex_text'):
+                            gender_line = f"性别: {complete_user_info['sex_text']}"
+                            if complete_user_info.get('sex_o_text'):
+                                gender_line += f" | 性取向: {complete_user_info['sex_o_text']}"
+                            if complete_user_info.get('sex_p_text'):
+                                gender_line += f" | 角色: {complete_user_info['sex_p_text']}"
+                            print(f"   {gender_line}")
+                        
+                        if complete_user_info.get('height'):
+                            height_line = f"身高: {complete_user_info['height']}cm"
+                            if complete_user_info.get('weight'):
+                                height_line += f" | 体重: {complete_user_info['weight']}kg"
+                            print(f"   {height_line}")
+                        
+                        if complete_user_info.get('country'):
+                            print(f"   地区: {complete_user_info['country']}")
+                        
+                        if complete_user_info.get('last_time'):
+                            print(f"   最后在线: {complete_user_info['last_time']}")
+                
+                # 发布时间
+                if post.get('create_time'):
+                    create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(post.get("create_time", 0)))
+                    print(f"   发布时间: {create_time}")
+                
+                # 帖子内容（限制长度）
+                content = post.get('content') or post.get('title') or '[无内容]'
+                if len(content) > 200:
+                    content = content[:200] + "..."
+                print(f"   内容: {content}")
+                
+                # 统计信息
+                print(f"   浏览: {post.get('onclick', 0)} | 赞: {post.get('dig_count', 0)} | 评论: {post.get('com_count', 0)}")
+                
+                # 图片信息
+                files = post.get("files", [])
+                if isinstance(files, list) and files:
+                    image_urls = []
+                    for f in files:
+                        url = ""
+                        if isinstance(f, dict):
+                            url = f.get('url', '')
+                        elif isinstance(f, str) and f.startswith('http'):
+                            url = f
+                        
+                        if url and url.startswith('http'):
+                            image_urls.append(url)
+                    
+                    if image_urls:
+                        print(f"   图片: {len(image_urls)}张")
+                
+                # 自动保存
+                if user_id and complete_user_info:
+                    if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=index):
+                        saved_count += 1
+                        print("   💾 已保存")
+                    else:
+                        print("   ❌ 保存失败")
+                
+                print("-" * 50)
+                time.sleep(0.02)  # 小延迟避免输出太快
+            
+            # 如果不是最后一批，暂停一下
+            if batch_end < display_count:
+                print(f"\n⏭️  继续显示下一批...")
+                time.sleep(0.2)
         
-        # 简洁统计
-        total_time = time.time() - start_time
-        print(f"\n搜索完成")
-        print(f"匹配: {display_count}条 | 保存: {saved_count}条 | 耗时: {total_time:.1f}秒")
+        # ========== 最终统计 ==========
+        print(f"\n✅ 搜索完成!")
+        print(f"📊 最终结果:")
+        print(f"  目标匹配: {max_posts} 个")
+        print(f"  实际匹配: {total_matched} 个")
+        print(f"  显示帖子: {display_count} 个")
+        print(f"  保存帖子: {saved_count} 个")
+        print(f"  总耗时: {total_time:.1f} 秒")
         print("=" * 60)
         
         return saved_count, display_count
