@@ -2975,71 +2975,283 @@ class BDSMForumSpider:
             print(f"  保存率: {save_rate:.1f}%")
         print(f"  保存位置: {self.users_dir}")
 
-    def search_and_save_posts_gui(self, keyword, max_pages=3):
-        """GUI版本的搜索帖子功能（无需交互输入）"""
-        print(f"\n🔍 搜索帖子: {keyword}")
-        print("=" * 40)
-
-        # 创建结果保存器
-        saver = ResultSaver(self.search_dir, f"帖子搜索_{keyword}", f"第1页", f"第{max_pages}页")
-
-        all_posts = []
-        total_saved = 0
+    def search_and_save_posts_gui(self, keyword, max_pages=3, threads=10):
+        """
+        搜索帖子的GUI版本 - 支持自定义线程数（最大500）
+        真正按指定页数搜索多页
+        """
+        print(f"\n{'='*60}")
+        print(f"🔍 搜索帖子 - GUI版本")
+        print(f"📝 关键词: {keyword}")
+        print(f"📄 搜索页数: {max_pages}")
+        print(f"⚡ 线程数: {threads} (最大500)")
+        print(f"⏰ 排序方式: 按创建时间倒序")
+        print(f"{'='*60}")
+        
+        # 调用真正按页数搜索的方法
+        return self._search_posts_by_pages(keyword, max_pages, threads)
+    
+    def _search_posts_by_pages(self, keyword, max_pages=3, threads=10):
+        """
+        按指定页数搜索帖子 - 真正搜索多页
+        """
+        print(f"\n🚀 开始搜索 {max_pages} 页帖子...")
+        print(f"📝 关键词: '{keyword}'")
+        print(f"📄 页数范围: 第1页到第{max_pages}页")
+        print(f"⚡ 线程数: {threads}")
+        
         start_time = time.time()
-
-        for page in range(1, max_pages + 1):
-            print(f"\n📄 正在搜索第 {page} 页...")
-            result = self.search_posts_with_page(keyword, page)
-
-            if not result or not result.get("success"):
-                error_msg = result.get('error', '未知错误') if result else '请求失败'
-                print(f"❌ 第 {page} 页搜索失败: {error_msg}")
-                break
-
-            posts = result.get("data", [])
-            if not posts:
-                print(f"📭 第 {page} 页没有找到相关帖子")
-                break
-
-            print(f"✅ 第 {page} 页找到 {len(posts)} 个相关帖子")
-            all_posts.extend(posts)
-
-            # 显示并自动保存
-            page_saved = 0
-            for idx, post in enumerate(posts, 1):
-                # 类型检查：确保 post 是字典
-                if not isinstance(post, dict):
-                    print(f"⚠️ 跳过非法数据格式: {type(post)}")
-                    continue
-
-                # 显示帖子内容
-                post_index = len(all_posts) - len(posts) + idx
-                self.display_post_for_browsing(post, post_index)
-
-                # 类型检查：确保 user_info 是字典
+        
+        # 限制线程数
+        actual_threads = min(max(1, threads), 500)
+        
+        # 存储结果
+        all_matched_posts = []
+        saved_count = 0
+        
+        # 使用多线程并发搜索所有页面
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def search_page_task(page_num):
+            """搜索单个页面的任务"""
+            try:
+                print(f"🔄 正在搜索第 {page_num} 页...")
+                
+                # 使用原始的搜索方法
+                result = self.search_posts_with_page(keyword, page_num)
+                
+                if result["success"]:
+                    matched_posts = result.get("data", [])
+                    total_in_page = result.get("total_in_page", 0)
+                    
+                    # 标记来源页面
+                    for post in matched_posts:
+                        post['_source_page'] = page_num
+                    
+                    return {
+                        "page": page_num,
+                        "success": True,
+                        "matched": len(matched_posts),
+                        "total_in_page": total_in_page,
+                        "posts": matched_posts,
+                        "error": None
+                    }
+                else:
+                    return {
+                        "page": page_num,
+                        "success": False,
+                        "matched": 0,
+                        "total_in_page": 0,
+                        "posts": [],
+                        "error": result.get("error", "未知错误")
+                    }
+            except Exception as e:
+                return {
+                    "page": page_num,
+                    "success": False,
+                    "matched": 0,
+                    "total_in_page": 0,
+                    "posts": [],
+                    "error": f"异常: {str(e)}"
+                }
+        
+        # 步骤1：并发搜索所有页面
+        print(f"\n📥 第一阶段：并发搜索 {max_pages} 个页面...")
+        
+        with ThreadPoolExecutor(max_workers=min(actual_threads, 100)) as executor:
+            # 提交所有页面搜索任务
+            futures = {executor.submit(search_page_task, p): p for p in range(1, max_pages + 1)}
+            
+            page_results = []
+            
+            for future in as_completed(futures):
+                page_num = futures[future]
+                try:
+                    result = future.result(timeout=30)
+                    page_results.append(result)
+                    
+                    if result["success"]:
+                        if result["matched"] > 0:
+                            print(f"✅ 第 {page_num} 页: 找到 {result['matched']} 条匹配 (共 {result['total_in_page']} 条)")
+                            # 添加到总列表
+                            all_matched_posts.extend(result["posts"])
+                        else:
+                            print(f"📭 第 {page_num} 页: 无匹配 (共 {result['total_in_page']} 条)")
+                    else:
+                        print(f"❌ 第 {page_num} 页失败: {result['error']}")
+                except Exception as e:
+                    print(f"⚠️  第 {page_num} 页异常: {e}")
+        
+        # 按页码排序结果
+        page_results.sort(key=lambda x: x["page"])
+        
+        total_matched = len(all_matched_posts)
+        print(f"\n📊 搜索完成: 共搜索 {len(page_results)}/{max_pages} 页")
+        print(f"🎯 总计匹配: {total_matched} 条帖子")
+        
+        # 步骤2：显示和保存匹配的帖子
+        if total_matched > 0:
+            print(f"\n📋 显示匹配的帖子 (自动保存):")
+            print("=" * 60)
+            
+            # 按来源页面和帖子ID排序
+            all_matched_posts.sort(key=lambda x: (x.get('_source_page', 0), x.get('id', 0)))
+            
+            # 处理每个匹配的帖子
+            for i, post in enumerate(all_matched_posts, 1):
+                post_id = post.get('id')
+                source_page = post.get('_source_page', '?')
+                
+                print(f"\n[{i}] 帖子ID: {post_id}")
+                
+                # 获取完整的用户信息
                 user_info = post.get("user", {})
-                if not isinstance(user_info, dict):
-                    user_info = {}
                 user_id = user_info.get("id") or post.get("user_id")
+                
                 if user_id:
                     complete_user_info = self.get_complete_user_info(user_id)
                     if complete_user_info:
-                        if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False):
-                            page_saved += 1
-                            total_saved += 1
-                time.sleep(0.2)
-
-            print(f"📝 第 {page} 页保存了 {page_saved}/{len(posts)} 个帖子")
-
-            if page < max_pages:
-                time.sleep(1)
-
-        elapsed = time.time() - start_time
-        print(f"\n🔍 搜索完成！")
-        print(f"📊 总计: 找到 {len(all_posts)} 个帖子，保存 {total_saved} 个")
-        print(f"⏱️  耗时: {elapsed:.1f}秒")
-        print(f"💾 保存位置: {self.search_dir}/")
-
+                        # 使用完整的用户信息
+                        print(f"   👤 用户: {complete_user_info.get('name', f'用户_{user_id}')} (ID: {user_id})")
+                        
+                        # 显示详细的用户信息（统一格式）
+                        if complete_user_info.get('age'):
+                            print(f"   🎂 年龄: {complete_user_info['age']}", end="")
+                            if complete_user_info.get('birthday'):
+                                print(f" | 生日: {complete_user_info['birthday']}")
+                            else:
+                                print()
+                        
+                        if complete_user_info.get('sex_text'):
+                            gender_info = f"性别: {complete_user_info['sex_text']}"
+                            if complete_user_info.get('sex_o_text'):
+                                gender_info += f" | 性取向: {complete_user_info['sex_o_text']}"
+                            if complete_user_info.get('sex_p_text'):
+                                gender_info += f" | 角色: {complete_user_info['sex_p_text']}"
+                            print(f"   ⚧️  {gender_info}")
+                        
+                        if complete_user_info.get('height'):
+                            print(f"   📏 身高: {complete_user_info['height']}", end="")
+                            if complete_user_info.get('weight'):
+                                print(f" | 体重: {complete_user_info['weight']}")
+                            else:
+                                print()
+                        
+                        if complete_user_info.get('country'):
+                            print(f"   📍 地区: {complete_user_info['country']}")
+                        
+                        if complete_user_info.get('last_time'):
+                            print(f"   ⏰ 最后在线: {complete_user_info['last_time']}")
+                    
+                    elif user_info.get('user_name'):
+                        # 如果获取不到完整信息，至少显示用户名
+                        print(f"   👤 用户: {user_info['user_name']} (ID: {user_id})")
+                
+                # 显示帖子发布时间
+                if post.get('create_time'):
+                    create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(post.get("create_time", 0)))
+                    print(f"   📅 发布时间: {create_time}")
+                
+                # 显示帖子内容（始终显示）
+                has_content = False
+                if 'content' in post and post['content'] and post['content'].strip():
+                    content = post['content']
+                    if len(content) > 150:
+                        print(f"   📝 内容: {content[:150]}...")
+                    else:
+                        print(f"   📝 内容: {content}")
+                    has_content = True
+                else:
+                    # 如果没有content字段，使用title作为内容
+                    title = post.get('title', '')
+                    if title and title.strip():
+                        if len(title) > 150:
+                            print(f"   📝 内容: {title[:150]}...")
+                        else:
+                            print(f"   📝 内容: {title}")
+                        has_content = True
+                
+                # 如果没有文字内容，显示提示
+                if not has_content:
+                    print(f"   📝 内容: [此帖无文字内容]")
+                
+                # 显示统计信息
+                print(f"   📊 浏览: {post.get('onclick', 0)} | 赞: {post.get('dig_count', 0)} | 评论: {post.get('com_count', 0)}")
+                
+                # 显示图片信息（如果有）
+                files = post.get("files", [])
+                if isinstance(files, list) and files:
+                    # 提取所有有效的图片URL
+                    image_urls = []
+                    for f in files:
+                        url = ""
+                        if isinstance(f, dict):
+                            url = f.get('url', '')
+                        elif isinstance(f, str) and f.startswith('http'):
+                            url = f
+                        
+                        if url and url.startswith('http'):
+                            image_urls.append(url)
+                    
+                    if image_urls:
+                        print(f"   🖼️  图片数量: {len(image_urls)}张")
+                        
+                        # 显示所有有效的图片URL
+                        for j, url in enumerate(image_urls, 1):
+                            print(f"     图片{j}: {url}")
+                    else:
+                        print(f"   📁 附件数量: {len(files)}个 [无有效图片链接]")
+                
+                # 自动保存帖子（保持原始自动保存逻辑）
+                if user_id and complete_user_info:
+                    if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=i):
+                        saved_count += 1
+                        print(f"   ✅ 帖子已自动保存")
+                    else:
+                        print(f"   ❌ 保存失败")
+                else:
+                    print(f"   ⚠️  无法保存：缺少用户信息")
+                
+                print("-" * 60)
+                
+                # 控制显示速度
+                if i % 5 == 0:
+                    time.sleep(0.1)
+        
+        # 最终统计
+        total_time = time.time() - start_time
+        
+        print(f"\n{'='*60}")
+        print("✅ 搜索完成！")
+        print("=" * 60)
+        print(f"📊 统计信息:")
+        print(f"  指定页数: {max_pages}")
+        print(f"  实际搜索页数: {len(page_results)}")
+        print(f"  线程数量: {actual_threads}")
+        print(f"  匹配帖子总数: {total_matched}")
+        print(f"  自动保存帖子数: {saved_count}")
+        
+        # 计算成功率
+        successful_pages = len([r for r in page_results if r["success"]])
+        if max_pages > 0:
+            success_rate = (successful_pages / max_pages) * 100
+            print(f"  页面成功率: {success_rate:.1f}%")
+        
+        if total_matched > 0:
+            save_rate = (saved_count / total_matched) * 100
+            print(f"  保存率: {save_rate:.1f}%")
+        
+        print(f"⏱️  总耗时: {total_time:.1f}秒")
+        
+        if total_time > 0 and len(page_results) > 0:
+            speed = len(page_results) / total_time
+            print(f"⚡ 搜索速度: {speed:.1f}页/秒")
+        
+        print(f"💾 数据保存目录: {self.users_dir}/")
+        print("=" * 60)
+        
+        return saved_count, total_matched
+    
     def search_username_gui(self, keyword, max_pages=30, threads=8):
         """GUI版本的用户名搜索功能（无需交互输入）"""
         print(f"\n🔍 搜索用户名包含 '{keyword}' 的用户")
