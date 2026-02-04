@@ -286,8 +286,11 @@ class BDSMForumSpider:
             "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7"
         }
-        ua = ("Mozilla/5.0 (Linux; Android 13; SM-G991B) AppleWebKit/537.36 "
-              "(KHTML, like Gecko) Chrome/116.0.0.0 Mobile Safari/537.36")
+        
+        # 修改这里：使用通用User-Agent
+        # 通用移动端，不透露具体设备
+        ua = "Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/98.0.4758.101 Mobile Safari/537.36"
+        
         headers.update({"User-Agent": ua, "lang": "zh", "plat": "android"})
         if self.token:
             headers["token"] = self.token
@@ -1760,8 +1763,204 @@ class BDSMForumSpider:
         print(f"  保存帖子: {total_saved}")
         print(f"  耗时: {elapsed:.1f}秒")
 
+    def crawl_and_save_posts_multi_thread(self, start_page=1, max_pages=3, threads=100):
+        """高速并发爬取：按顺序保存和显示"""
+        print(f"\n⚡ 高速并发爬取：从第{start_page}页开始，共{max_pages}页")
+        print(f"⚡ 使用 {threads} 个线程")
+        print(f"📝 显示模式：完整帖子信息")
+        print(f"🚀 策略：并发处理，按顺序保存和显示")
+        
+        start_time = time.time()
+        
+        # 存储所有数据
+        all_page_data = []
+        stats = {
+            "total_posts": 0,
+            "saved_count": 0
+        }
+        
+        # 第一阶段：并发获取所有页面
+        print(f"\n🚀 第一阶段：并发获取 {max_pages} 个页面...")
+        
+        def fetch_page(page_num):
+            try:
+                result = self.get_posts(page=page_num)
+                if result["success"]:
+                    posts = result.get("data", [])
+                    return page_num, posts, len(posts), None
+                return page_num, [], 0, f"获取失败"
+            except Exception as e:
+                return page_num, [], 0, f"异常"
+        
+        # 并发获取页面
+        with ThreadPoolExecutor(max_workers=min(threads, 50)) as executor:
+            futures = [executor.submit(fetch_page, page) 
+                      for page in range(start_page, start_page + max_pages)]
+            
+            page_results = []
+            for future in as_completed(futures):
+                try:
+                    page_num, posts, count, error = future.result(timeout=5)
+                    if error:
+                        print(f"❌ 第 {page_num} 页: {error}")
+                    else:
+                        print(f"✅ 第 {page_num} 页: {count}帖")
+                        stats["total_posts"] += count
+                        page_results.append((page_num, posts, error))
+                except:
+                    pass
+            
+            # 按页码排序
+            page_results.sort(key=lambda x: x[0])
+            all_page_data = page_results
+        
+        print(f"\n📊 获取完成：共 {stats['total_posts']} 个帖子")
+        
+        # 第二阶段：按页面顺序处理
+        print(f"\n🚀 第二阶段：按页面顺序处理...")
+        
+        # 存储所有处理结果
+        all_results = {}  # {page_num: [(post_index, post, user_info, saved, error), ...]}
+        
+        for page_num, posts, error in all_page_data:
+            if error or not posts:
+                continue
+            
+            print(f"\n{'='*60}")
+            print(f"📄 正在处理第 {page_num} 页 ({len(posts)}个帖子)")
+            print("=" * 60)
+            
+            page_results = []
+            
+            # 并发获取本页所有帖子的用户信息
+            def get_post_info(post_index, post):
+                user_id = post.get("user", {}).get("id") or post.get("user_id")
+                if not user_id:
+                    return post_index, post, None, False, "缺少用户ID"
+                
+                try:
+                    user_info = self.get_complete_user_info(user_id)
+                    if not user_info:
+                        return post_index, post, None, False, "用户信息失败"
+                    return post_index, post, user_info, False, None
+                except Exception as e:
+                    return post_index, post, None, False, f"用户信息异常"
+            
+            # 并发获取用户信息
+            with ThreadPoolExecutor(max_workers=min(threads, 20)) as executor:
+                futures = []
+                for i, post in enumerate(posts, 1):
+                    future = executor.submit(get_post_info, i, post)
+                    futures.append(future)
+                
+                # 按顺序收集结果
+                for future in futures:
+                    try:
+                        post_index, post, user_info, saved, error = future.result(timeout=10)
+                        page_results.append((post_index, post, user_info, saved, error))
+                    except:
+                        pass
+            
+            # 按帖子索引排序
+            page_results.sort(key=lambda x: x[0])
+            
+            # 按顺序保存和显示本页帖子
+            for post_index, post, user_info, saved, error in page_results:
+                if error:
+                    print(f"[{post_index}] ❌ {error}")
+                    continue
+                
+                # 先显示帖子信息
+                print(f"\n[{post_index}] 帖子ID: {post.get('id')}")
+                self.display_post_for_browsing(post, index=post_index)
+                
+                # 按顺序保存帖子
+                try:
+                    if self.save_post_for_user_crawl(post, user_info, manual_mode=False, index=post_index):
+                        stats["saved_count"] += 1
+                        print("✅ 已保存")
+                    else:
+                        print("❌ 保存失败")
+                except Exception as e:
+                    print(f"❌ 保存异常: {str(e)[:30]}")
+                
+                print("-" * 40)
+            
+            # 存储本页结果
+            all_results[page_num] = page_results
+            
+            print(f"\n📊 第 {page_num} 页完成: 保存{len([r for r in page_results if r[3]])}/{len(posts)}帖")
+        
+        # 最终统计
+        total_time = time.time() - start_time
+        
+        print(f"\n{'='*60}")
+        print("🎉 爬取完成！")
+        print("=" * 60)
+        print(f"📊 统计信息:")
+        print(f"  总页面数: {max_pages}")
+        print(f"  获取帖子: {stats['total_posts']}个")
+        print(f"  保存帖子: {stats['saved_count']}个")
+        
+        if stats['total_posts'] > 0:
+            save_rate = (stats['saved_count'] / stats['total_posts']) * 100
+            print(f"  保存率: {save_rate:.1f}%")
+        
+        print(f"  总耗时: {total_time:.2f}秒")
+        if total_time > 0 and stats['saved_count'] > 0:
+            speed = stats['saved_count'] / total_time
+            print(f"  平均速度: {speed:.1f}帖/秒")
+        
+        print(f"\n💾 数据保存在: {self.users_dir}/")
+        print("=" * 60)
+        
+        return stats['saved_count'], stats['total_posts']
+
+    def search_posts_with_page(self, keyword, page=1):
+        # 注意：payload 里不再提交 keyword (kw)
+        payload = self.payload_template.copy()
+        payload["page"] = page
+        # 关键：确保请求列表时按时间倒序
+        payload["order"] = {"create_time": "desc"}
+        # 重要：清空搜索关键词，让API返回通用列表
+        payload["kw"] = "" 
+        
+        try:
+            r = requests.post(f"{self.base_url}/api.php/circle/list",
+                              headers=self.headers, json=payload, timeout=30)
+            if r.status_code == 200:
+                data = r.json()
+                if data.get("code") == 1:
+                    all_posts = data.get("data", {}).get("data", [])
+                    
+                    # 本地筛选：在帖子标题或内容中查找关键词
+                    matched_posts = []
+                    for post in all_posts:
+                        title = post.get('title', '')
+                        content = post.get('content', '')
+                        # 如果关键词出现在标题或内容中，则保留
+                        if keyword in title or keyword in content:
+                            matched_posts.append(post)
+                    
+                    # 调试信息
+                    if page == 1:
+                        print(f"🔍 本地筛选：从第{page}页{len(all_posts)}条帖子中，匹配到{len(matched_posts)}条含“{keyword}”的帖子。")
+                        if matched_posts:
+                            from datetime import datetime
+                            first_time = matched_posts[0].get('create_time')
+                            if first_time:
+                                first_str = datetime.fromtimestamp(first_time).strftime("%Y-%m-%d %H:%M:%S")
+                                print(f"📅 匹配到的最新帖子时间：{first_str}")
+                    
+                    # 返回匹配的帖子
+                    return {"success": True, "page": page, "data": matched_posts, "raw_data": data, "total_in_page": len(all_posts)}
+                return {"success": False, "error": data.get("msg", "未知错误")}
+            return {"success": False, "error": f"HTTP {r.status_code}"}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+            
     def search_and_save_posts(self):
-        print("\n🔍 搜索帖子功能")
+        print("\n🔍 搜索帖子功能（多线程凑满显示版）")
         print("=" * 40)
         
         keyword = input("请输入搜索关键词: ").strip()
@@ -1769,261 +1968,213 @@ class BDSMForumSpider:
             print("❌ 请输入搜索关键词")
             return
         
-        # 添加翻页功能
         try:
-            page_input = input("请输入搜索页数 (默认1页): ").strip()
-            if not page_input:
-                max_pages = 1
-            else:
-                max_pages = int(page_input)
-                max_pages = max(1, min(500, max_pages))
+            posts_per_page = int(input("每页显示条数 (默认15): ").strip() or "15")
+            posts_per_page = max(1, min(50, posts_per_page))
         except:
-            max_pages = 1
-            print("⚠️  输入无效，使用默认1页")
+            posts_per_page = 15
         
-        # 创建结果保存器
-        saver = ResultSaver(self.search_dir, f"帖子搜索_{keyword}", f"第1页", f"第{max_pages}页")
+        try:
+            fetch_threads = int(input("并发线程数 (默认10): ").strip() or "10")
+            fetch_threads = max(1, min(30, fetch_threads))
+        except:
+            fetch_threads = 10
         
-        all_posts = []
+        print(f"\n🎯 每页显示 {posts_per_page} 条包含“{keyword}”的帖子")
+        print(f"⚡ 使用 {fetch_threads} 个线程并发获取")
+        print(f"💾 帖子将保存到: {self.users_dir}")
+        print("=" * 50)
+        
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def fetch_single_page(page_num):
+            payload = self.payload_template.copy()
+            payload["page"] = page_num
+            payload["order"] = {"create_time": "desc"}
+            payload["kw"] = ""
+            
+            try:
+                r = requests.post(f"{self.base_url}/api.php/circle/list",
+                                headers=self.headers, json=payload, timeout=15)
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("code") == 1:
+                        return page_num, data.get("data", {}).get("data", []), True
+                    return page_num, [], False
+                return page_num, [], False
+            except:
+                return page_num, [], False
+        
+        all_matched = []
+        scanned_posts = 0
+        scanned_pages = 0
+        current_page = 1
+        batch_size = 10
+        continue_search = True
         total_saved = 0
-        start_time = time.time()
         
-        for page in range(1, max_pages + 1):
-            print(f"\n📄 正在搜索第 {page} 页...")
-            result = self.search_posts_with_page(keyword, page)
+        while continue_search:
+            print(f"\n📥 并发获取第 {current_page} 页起的 {batch_size} 页...")
             
-            if not result or not result.get("success"):
-                print(f"❌ 第 {page} 页搜索失败: {result.get('error', '未知错误')}")
-                saver.save_record(f"第{page}页", "❌", f"搜索失败: {result.get('error', '未知错误')}")
+            raw_pages = []
+            with ThreadPoolExecutor(max_workers=min(fetch_threads, batch_size)) as executor:
+                futures = [executor.submit(fetch_single_page, p) 
+                          for p in range(current_page, current_page + batch_size)]
+                
+                for future in as_completed(futures):
+                    page_num, posts, success = future.result()
+                    if success and posts:
+                        raw_pages.append((page_num, posts))
+                    else:
+                        print(f"⚠️  第{page_num}页获取失败")
+            
+            raw_pages.sort(key=lambda x: x[0])
+            
+            if not raw_pages:
+                print("❌ 未获取到有效数据")
                 break
+            
+            batch_posts = sum(len(posts) for _, posts in raw_pages)
+            batch_pages = len(raw_pages)
+            scanned_posts += batch_posts
+            scanned_pages += batch_pages
+            
+            print(f"✅ 获取 {batch_pages}页/{batch_posts}条 | 累计 {scanned_pages}页/{scanned_posts}条")
+            
+            new_matches = []
+            for page_num, posts in raw_pages:
+                for post in posts:
+                    if keyword in post.get('title', '') or keyword in post.get('content', ''):
+                        post['_source_page'] = page_num
+                        new_matches.append(post)
+            
+            if new_matches:
+                print(f"🎯 本批匹配 {len(new_matches)} 条")
+                all_matched.extend(new_matches)
+            else:
+                print("📭 本批无匹配")
+            
+            while len(all_matched) >= posts_per_page and continue_search:
+                page_to_show = all_matched[:posts_per_page]
+                page_num = (len(all_matched) // posts_per_page)
                 
-            posts = result.get("data", [])
-            if not posts:
-                print(f"📭 第 {page} 页没有找到相关帖子")
-                saver.save_record(f"第{page}页", "📭", "没有找到相关帖子")
-                if page == 1:
-                    break
-                else:
-                    break
-            
-            print(f"✅ 第 {page} 页找到 {len(posts)} 个相关帖子")
-            saver.save_record(f"第{page}页", "✅", f"找到{len(posts)}个帖子")
-            all_posts.extend(posts)
-            
-            # 显示当前页的帖子
-            print(f"\n📋 第 {page} 页搜索结果:")
-            print("=" * 50)
-            
-            for i, post in enumerate(posts, 1):
-                # 使用统一的显示函数
-                self.display_post_for_browsing(post, index=i)
-            
-            # 保存当前页的帖子
-            if posts:
-                print("\n" + "=" * 50)
-                save_choice = input(f"是否保存第 {page} 页的所有搜索结果？(y/n/s=选择保存): ").strip().lower()
+                print(f"\n{'='*50}")
+                print(f"📋 第 {page_num} 页匹配结果 ({len(page_to_show)}条):")
+                print("=" * 50)
                 
-                if save_choice == 'y':
+                # 显示本页帖子
+                for i, post in enumerate(page_to_show, 1):
+                    print(f"\n[{i}] 帖子ID:{post.get('id')} (原页:{post.get('_source_page', '?')})")
+                    self.display_post_for_browsing(post, index=None)
+                
+                # 🔥 新增：保存功能选择
+                print(f"\n💾 保存选项:")
+                print("1. 保存本页所有帖子")
+                print("2. 选择保存特定帖子")
+                print("3. 不保存，继续下一页")
+                print("4. 停止搜索")
+                
+                save_choice = input("请选择 (1-4): ").strip()
+                
+                if save_choice == "1":
+                    # 保存本页所有帖子
                     page_saved = 0
-                    for post in posts:
-                        # 获取用户信息
+                    for i, post in enumerate(page_to_show, 1):
                         user_info = post.get("user", {})
                         user_id = user_info.get("id") or post.get("user_id")
                         if user_id:
-                            # 获取完整用户信息
                             complete_user_info = self.get_complete_user_info(user_id)
                             if complete_user_info:
-                                if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False):
+                                if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=i):
                                     page_saved += 1
-                                    saver.save_record(f"帖子{post.get('id')}", "✅", "自动保存")
-                                else:
-                                    saver.save_record(f"帖子{post.get('id')}", "❌", "保存失败")
-                            else:
-                                saver.save_record(f"帖子{post.get('id')}", "❌", "无法获取用户信息")
-                        time.sleep(0.3)
-                    total_saved += page_saved
-                    print(f"✅ 第 {page} 页保存了 {page_saved}/{len(posts)} 个帖子")
-                    saver.save_record(f"第{page}页", "📊", f"保存{page_saved}/{len(posts)}个帖子")
-                
-                elif save_choice == 's':
-                    print("\n🔍 请选择要保存的帖子:")
-                    selected = input(f"输入第 {page} 页的帖子编号（用逗号分隔，如 1,3,5）: ").strip()
+                                    total_saved += 1
+                    print(f"✅ 本页保存了 {page_saved}/{len(page_to_show)} 个帖子")
                     
+                elif save_choice == "2":
+                    # 选择保存特定帖子
+                    selected = input("输入要保存的序号 (如 1,3,5): ").strip()
                     if selected:
                         try:
                             indices = [int(idx.strip()) - 1 for idx in selected.split(',') if idx.strip().isdigit()]
-                            page_saved = 0
-                            for idx in indices:
-                                if 0 <= idx < len(posts):
-                                    # 获取用户信息
-                                    user_info = posts[idx].get("user", {})
-                                    user_id = user_info.get("id") or posts[idx].get("user_id")
+                            indices = [idx for idx in indices if 0 <= idx < len(page_to_show)]
+                            if indices:
+                                page_saved = 0
+                                for idx in indices:
+                                    post = page_to_show[idx]
+                                    user_info = post.get("user", {})
+                                    user_id = user_info.get("id") or post.get("user_id")
                                     if user_id:
                                         complete_user_info = self.get_complete_user_info(user_id)
                                         if complete_user_info:
-                                            if self.save_post_for_user_crawl(posts[idx], complete_user_info, manual_mode=True):
+                                            if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=True, index=idx+1):
                                                 page_saved += 1
-                                                saver.save_record(f"帖子{posts[idx].get('id')}", "✅", "手动选择保存")
-                                            else:
-                                                saver.save_record(f"帖子{posts[idx].get('id')}", "❌", "保存失败")
-                                    time.sleep(0.5)
-                            total_saved += page_saved
-                            print(f"✅ 第 {page} 页保存了 {page_saved}/{len(indices)} 个帖子")
-                            saver.save_record(f"第{page}页", "📊", f"手动选择保存{page_saved}/{len(indices)}个帖子")
+                                                total_saved += 1
+                                print(f"✅ 选择了 {page_saved}/{len(indices)} 个帖子保存")
                         except:
                             print("❌ 输入格式错误")
-                            saver.save_record(f"第{page}页", "❌", "输入格式错误")
                 
-                # 如果不是最后一页，询问是否继续下一页
-                if page < max_pages:
-                    continue_choice = input(f"\n是否继续搜索第 {page+1} 页？(y/n): ").strip().lower()
-                    if continue_choice != 'y':
-                        print("⏹️  停止搜索")
-                        break
-            else:
-                saver.save_record(f"第{page}页", "📭", "本页无帖子可保存")
+                elif save_choice == "4":
+                    continue_search = False
+                    break
+                
+                # 从缓存中移除已显示的帖子
+                all_matched = all_matched[posts_per_page:]
+                
+                # 询问是否继续下一页
+                if continue_search and len(all_matched) >= posts_per_page:
+                    choice = input(f"\n继续下一页？ (y/n): ").strip().lower()
+                    continue_search = (choice == 'y')
+                elif continue_search:
+                    print(f"\n⏳ 剩余{len(all_matched)}条，继续获取...")
+                    break
+            
+            current_page += batch_size
+            
+            if current_page > 200:
+                print("⚠️  达到200页限制")
+                break
+            
+            if len(all_matched) < posts_per_page and not continue_search:
+                break
         
-        # 统计总结果
-        elapsed = time.time() - start_time
-        print(f"\n" + "=" * 50)
-        print("🔍 搜索完成！")
+        # 处理最后剩余的帖子
+        if all_matched and continue_search:
+            print(f"\n📋 最后一批 ({len(all_matched)}条):")
+            print("=" * 50)
+            for i, post in enumerate(all_matched, 1):
+                print(f"\n[{i}] 帖子ID:{post.get('id')} (原页:{post.get('_source_page', '?')})")
+                self.display_post_for_browsing(post, index=None)
+            
+            # 询问是否保存最后一批
+            save_last = input(f"\n是否保存这最后 {len(all_matched)} 个帖子？ (y/n): ").strip().lower()
+            if save_last == 'y':
+                last_saved = 0
+                for i, post in enumerate(all_matched, 1):
+                    user_info = post.get("user", {})
+                    user_id = user_info.get("id") or post.get("user_id")
+                    if user_id:
+                        complete_user_info = self.get_complete_user_info(user_id)
+                        if complete_user_info:
+                            if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=i):
+                                last_saved += 1
+                                total_saved += 1
+                print(f"✅ 最后一批保存了 {last_saved}/{len(all_matched)} 个帖子")
+        
+        # 最终统计
+        print(f"\n{'='*50}")
+        print("✅ 搜索完成")
         print("=" * 50)
-        print(f"📊 统计:")
-        print(f"  总搜索页数: {min(page, max_pages)}/{max_pages}")
-        print(f"  找到帖子总数: {len(all_posts)}")
-        print(f"  保存帖子总数: {total_saved}")
-        if all_posts:
-            save_rate = (total_saved / len(all_posts)) * 100
-            print(f"  保存率: {save_rate:.1f}%")
-        
-        extra_stats = {
-            "搜索关键词": keyword,
-            "实际搜索页数": f"{min(page, max_pages)}/{max_pages}",
-            "找到帖子数": len(all_posts),
-            "保存帖子数": total_saved,
-            "保存率": f"{save_rate:.1f}%" if all_posts else "0%"
-        }
-        saver.finalize(total_saved, len(all_posts)-total_saved, len(all_posts), elapsed, extra_stats)
-        print(f"📋 搜索记录已保存: {saver.filepath}")
-
-    def crawl_and_save_posts(self, start_page=1, max_pages=3, threads=8):
-        """批量爬取帖子（多线程版本）"""
-        print(f"\n🎯 开始批量爬取：从第{start_page}页开始，共{max_pages}页")
-        print(f"⚡ 使用 {threads} 个线程")
-
-        # 创建结果保存器
-        saver = ResultSaver(self.search_dir, f"批量爬取", f"第{start_page}页", f"第{start_page+max_pages-1}页")
-
-        # 线程安全的计数器和结果存储
-        results_lock = threading.Lock()
-        all_posts = []  # 存储所有帖子 (page_num, posts)
-        page_results = {}  # 存储每页结果
-        saved_count = 0
-        total_posts = 0
-        failed_pages = 0
-        start_time = time.time()
-
-        def fetch_page(page_num):
-            """获取单页数据"""
-            nonlocal failed_pages
-            try:
-                result = self.get_posts(page=page_num)
-
-                if not result["success"]:
-                    with results_lock:
-                        failed_pages += 1
-                        saver.save_record(f"第{page_num}页", "❌", f"获取失败: {result.get('error', '未知错误')}")
-                    print(f"❌ 第 {page_num} 页获取失败: {result.get('error', '未知错误')}")
-                    return None
-
-                posts = result.get("data", [])
-                if not posts:
-                    with results_lock:
-                        saver.save_record(f"第{page_num}页", "📭", "没有数据")
-                    print(f"📭 第 {page_num} 页没有数据")
-                    return None
-
-                print(f"✅ 第 {page_num} 页获取到 {len(posts)} 个帖子")
-                return (page_num, posts)
-            except Exception as e:
-                with results_lock:
-                    failed_pages += 1
-                    saver.save_record(f"第{page_num}页", "❌", f"异常: {e}")
-                print(f"❌ 第 {page_num} 页异常: {e}")
-                return None
-
-        # 使用线程池并行获取所有页面
-        print(f"\n📥 正在并行获取第 {start_page} 到 {start_page + max_pages - 1} 页...")
-        with ThreadPoolExecutor(max_workers=threads) as executor:
-            futures = {executor.submit(fetch_page, page_num): page_num
-                      for page_num in range(start_page, start_page + max_pages)}
-
-            for future in as_completed(futures):
-                try:
-                    result = future.result()
-                    if result:
-                        page_num, posts = result
-                        with results_lock:
-                            page_results[page_num] = posts
-                            total_posts += len(posts)
-                except Exception as e:
-                    print(f"⚠️ 任务异常: {e}")
-
-        # 按页码顺序处理结果（从新到旧）
-        print(f"\n📋 正在处理和保存帖子...")
-        for page_num in sorted(page_results.keys()):
-            posts = page_results[page_num]
-
-            # 显示本页帖子概览（只显示前5个）
-            print(f"\n📄 第 {page_num} 页帖子:")
-            print("-" * 50)
-            for i, post in enumerate(posts[:5], 1):
-                self.display_post_for_browsing(post, index=i)
-            if len(posts) > 5:
-                print(f"   ... 还有 {len(posts)-5} 个帖子")
-
-            # 保存本页帖子
-            page_saved = 0
-            for i, post in enumerate(posts, 1):
-                if not isinstance(post, dict):
-                    continue
-                user_info = post.get("user", {})
-                if not isinstance(user_info, dict):
-                    user_info = {}
-                user_id = user_info.get("id") or post.get("user_id")
-                if user_id:
-                    complete_user_info = self.get_complete_user_info(user_id)
-                    if complete_user_info:
-                        success = self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=i)
-                        if success:
-                            page_saved += 1
-                            saved_count += 1
-                time.sleep(0.1)
-
-            print(f"📝 第 {page_num} 页保存了 {page_saved}/{len(posts)} 个帖子")
-            saver.save_record(f"第{page_num}页", "📊", f"保存{page_saved}/{len(posts)}个帖子")
-
-        elapsed = time.time() - start_time
-        actual_pages = len(page_results)
-
-        print(f"\n🎉 批量爬取完成！")
-        print(f"📊 总计:")
-        print(f"  爬取页数: {actual_pages}/{max_pages}")
-        print(f"  获取帖子: {total_posts}")
-        print(f"  保存帖子: {saved_count}")
-        print(f"  失败页数: {failed_pages}")
-        print(f"  耗时: {elapsed:.1f}秒")
-        print(f"💾 数据保存在: {self.users_dir}/")
-
-        extra_stats = {
-            "实际爬取页数": f"{actual_pages}/{max_pages}",
-            "获取帖子数": total_posts,
-            "保存帖子数": saved_count,
-            "失败页数": failed_pages,
-            "保存率": f"{(saved_count/total_posts*100):.1f}%" if total_posts > 0 else "0%"
-        }
-        saver.finalize(saved_count, total_posts-saved_count, total_posts, elapsed, extra_stats)
-        print(f"📋 批量爬取记录已保存: {saver.filepath}")
+        print(f"扫描页数: {scanned_pages}")
+        print(f"扫描帖子: {scanned_posts}")
+        print(f"匹配总数: {len(all_matched)}")
+        print(f"保存总数: {total_saved}")
+        if scanned_posts > 0:
+            match_rate = (len(all_matched) / scanned_posts) * 100
+            save_rate = (total_saved / len(all_matched)) * 100 if all_matched else 0
+            print(f"匹配率: {match_rate:.1f}%")
+            print(f"保存率: {save_rate:.1f}%")
+        print(f"💾 帖子保存到: {self.users_dir}")
+        print("=" * 50)
 
     # ---------- 投票功能 ----------
     def vote_check(self, task_id: int):
@@ -2073,7 +2224,7 @@ class BDSMForumSpider:
                             f"{vote_status} (code={vote_code}, msg={vote_msg})")
         else:
             saver.save_record(f"投票任务{task_id}", "⏹️", "用户取消投票")
-
+        
         saver.finalize(1 if valid else 0, 0, 1, 0)
         print(f"📋 投票测试记录已保存: {saver.filepath}")
 
@@ -2361,7 +2512,7 @@ class BDSMForumSpider:
         for filename in sorted(vote_files, reverse=True):
             filepath = os.path.join(self.votes_dir, filename)
             file_size = os.path.getsize(filepath)
-            file_time = time.strftime("%Y-%m-%d %H:%M", time.localtime(os.path.getctime(filepath)))
+            file_time = time.strftime("%Y-%m-d %H:%M", time.localtime(os.path.getctime(filepath)))
             
             print(f"📊 {filename} ({file_size/1024:.1f} KB, {file_time})")
         
@@ -3293,8 +3444,10 @@ def main():
         
         if choice == "1":
             start = int(input("开始页码(默认1)：") or 1)
-            pages = int(input("爬取页数(默认3)：") or 3)
-            spider.crawl_and_save_posts(start_page=start, max_pages=pages)
+            pages = int(input("爬取页数(默认100)：") or 100)
+            threads = int(input(f"线程数(默认10，最大50)：") or "10")
+            threads = min(max(1, threads), 50)
+            spider.crawl_and_save_posts_multi_thread(start_page=start, max_pages=pages, threads=threads)
             
         elif choice == "2":
             pid = int(input("帖子ID：") or 0)
