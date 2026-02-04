@@ -2,6 +2,7 @@
 BDSM 论坛工具 - Kivy GUI 版本
 分类标签页 + 弹出对话框输入 + 用户名密码登录
 修复: 延迟初始化避免线程冲突
+新增: 搜索帖子功能支持自定义线程数（最大500）
 """
 import os
 import sys
@@ -893,7 +894,7 @@ class MainScreen(BoxLayout):
         start = int(values.get("start", 1) or 1)
         pages = int(values.get("pages", 3) or 3)
         threads = int(values.get("threads", 8) or 8)
-        self.run_task(lambda: self.app.spider.crawl_and_save_posts(start_page=start, max_pages=pages, threads=threads))
+        self.run_task(lambda: self.app.spider.crawl_and_save_posts_multi_thread(start_page=start, max_pages=pages, threads=threads))
 
     def on_crawl_post(self, instance):
         dialog = InputDialog(
@@ -935,6 +936,7 @@ class MainScreen(BoxLayout):
             fields=[
                 {"key": "keyword", "label": "关键词", "default": ""},
                 {"key": "pages", "label": "搜索页数", "default": "3"},
+                {"key": "threads", "label": "线程数", "default": "10"},  # 添加线程数字段
             ],
             callback=self._do_search_posts
         )
@@ -943,8 +945,10 @@ class MainScreen(BoxLayout):
     def _do_search_posts(self, values):
         keyword = values.get("keyword", "")
         pages = int(values.get("pages", 3) or 3)
+        threads = int(values.get("threads", 10) or 10)  # 获取线程数
+        threads = min(max(1, threads), 500)  # 限制1-500线程
         if keyword:
-            self.run_task(lambda: self.app.spider.search_and_save_posts_gui(keyword, pages))
+            self.run_task(lambda: self.app.spider.search_and_save_posts_gui(keyword, pages, threads))
 
     def on_search_username(self, instance):
         dialog = InputDialog(
