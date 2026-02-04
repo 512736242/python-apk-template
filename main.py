@@ -2,7 +2,7 @@
 BDSM 论坛工具 - Kivy GUI 版本
 分类标签页 + 弹出对话框输入 + 用户名密码登录
 修复: 延迟初始化避免线程冲突
-新增: 搜索帖子功能支持自定义线程数（最大500）
+新增: 搜索帖子功能支持按帖子数量搜索
 """
 import os
 import sys
@@ -935,8 +935,8 @@ class MainScreen(BoxLayout):
             title='搜索帖子',
             fields=[
                 {"key": "keyword", "label": "关键词", "default": ""},
-                {"key": "pages", "label": "搜索页数", "default": "3"},
-                {"key": "threads", "label": "线程数", "default": "10"},  # 添加线程数字段
+                {"key": "max_posts", "label": "目标帖子数", "default": "15"},  # 改为 max_posts
+                {"key": "threads", "label": "线程数", "default": "10"},
             ],
             callback=self._do_search_posts
         )
@@ -944,11 +944,12 @@ class MainScreen(BoxLayout):
 
     def _do_search_posts(self, values):
         keyword = values.get("keyword", "")
-        pages = int(values.get("pages", 3) or 3)
-        threads = int(values.get("threads", 10) or 10)  # 获取线程数
-        threads = min(max(1, threads), 500)  # 限制1-500线程
+        max_posts = int(values.get("max_posts", 15) or 15)  # 获取 max_posts 参数
+        threads = int(values.get("threads", 10) or 10)
+        threads = min(max(1, threads), 500)
         if keyword:
-            self.run_task(lambda: self.app.spider.search_and_save_posts_gui(keyword, pages, threads))
+            # 调用函数时传入 max_posts 参数
+            self.run_task(lambda: self.app.spider.search_and_save_posts_gui(keyword, max_posts, threads))
 
     def on_search_username(self, instance):
         dialog = InputDialog(
