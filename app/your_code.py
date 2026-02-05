@@ -2979,8 +2979,9 @@ class BDSMForumSpider:
         """
         搜索帖子的GUI版本 - 持续搜索直到找到足够数量的匹配
         支持最大搜索50000个帖子
+        输出格式修改为指定样式
         """
-        print(f"\n🔍 搜索帖子 - 关键词: {keyword} | 目标: {max_posts}条 | 线程: {threads}")
+        print(f"[日志输出]搜索帖子 - 关键词: {keyword}目标: {max_posts}条 线程: {threads}")
         print("=" * 60)
         
         start_time = time.time()
@@ -3067,33 +3068,14 @@ class BDSMForumSpider:
         
         # ========== 搜索控制参数 ==========
         consecutive_empty_pages = 0       # 连续没有数据的页面数
-        max_consecutive_empty = 50         # 连续50页没有数据就停止
+        max_consecutive_empty = 50        # 连续50页没有数据就停止
         max_total_pages = 50000           # 最多搜索50000页（足够找5万个帖子）
         batch_number = 1                  # 当前批次号
-        last_batch_stats_time = time.time()  # 上次显示批次统计的时间
-        
-        print(f"🚀 开始搜索... (最多搜索 {max_total_pages} 页)")
-        print(f"📦 每批搜索 {batch_size} 页")
-        print(f"🎯 目标匹配: {max_posts} 个帖子")
-        print("-" * 60)
         
         # ========== 主搜索循环 ==========
         while (len(all_matched_posts) < max_posts and 
                current_page <= max_total_pages and
                consecutive_empty_pages < max_consecutive_empty):
-            
-            # 每3秒显示一次进度
-            current_time = time.time()
-            if current_time - last_batch_stats_time >= 3.0:  # 每3秒显示一次
-                last_batch_stats_time = current_time
-                print(f"\n📈 实时进度:")
-                print(f"  当前页面: 第 {current_page} 页")
-                print(f"  已搜索: {total_searched_pages} 页")
-                print(f"  扫描帖子: {total_posts_scanned} 条")
-                print(f"  找到匹配: {len(all_matched_posts)}/{max_posts} 个")
-                if len(all_matched_posts) > 0:
-                    progress = (len(all_matched_posts) / max_posts) * 100
-                    print(f"  完成进度: {progress:.1f}%")
             
             print(f"\n📥 第{batch_number}批: 搜索第{current_page}~{current_page+batch_size-1}页...")
             
@@ -3127,77 +3109,25 @@ class BDSMForumSpider:
                         batch_total_posts += result["total_in_page"]
                     else:
                         consecutive_empty_pages += 1
-                    
-                    # 显示每页详情（只显示有匹配的页面）
-                    if result["success"] and result["matched"]:
-                        print(f"  ✅ 第{result['page']}页: {len(result['matched'])}个匹配 (共{result['total_in_page']}条)")
-            
-            # 显示本批统计
-            print(f"  📊 本批统计: {batch_total_posts}条帖子 | {batch_matched_posts}个匹配")
-            print(f"  🎯 累计匹配: {len(all_matched_posts)}/{max_posts}")
             
             # 如果没有数据，说明可能到了数据边界
             if not batch_has_data:
-                print(f"  ⚠️  本批页面没有数据，连续空页: {consecutive_empty_pages}/{max_consecutive_empty}")
-            else:
                 current_page += batch_size
             
             batch_number += 1
             
-            # 每10批显示一次详细报告
-            if batch_number % 10 == 0:
-                progress_percent = min(100, (len(all_matched_posts) / max_posts) * 100)
-                pages_percent = min(100, (current_page / max_total_pages) * 100)
-                print(f"\n📋 详细报告 (第{batch_number}批):")
-                print(f"  搜索页数: {total_searched_pages}/{max_total_pages} ({pages_percent:.1f}%)")
-                print(f"  匹配进度: {len(all_matched_posts)}/{max_posts} ({progress_percent:.1f}%)")
-                print(f"  扫描帖子: {total_posts_scanned} 条")
-                print(f"  匹配率: {(len(all_matched_posts)/total_posts_scanned*100 if total_posts_scanned>0 else 0):.2f}%")
-                print(f"  数据页面: {pages_with_data} 页")
-                print(f"  匹配页面: {pages_with_matches} 页")
-            
             # 检查停止条件：连续多页没有数据
             if consecutive_empty_pages >= max_consecutive_empty:
-                print(f"\n🛑 连续 {consecutive_empty_pages} 页没有数据，停止搜索")
                 break
             
         # ========== 搜索完成统计 ==========
-        print(f"\n{'='*60}")
-        print("✅ 搜索完成!")
-        print("=" * 60)
-        
         total_matched = len(all_matched_posts)
-        total_time = time.time() - start_time
         
-        print(f"📊 最终统计:")
-        print(f"  搜索页数: {total_searched_pages} 页")
-        print(f"  扫描帖子: {total_posts_scanned} 条")
-        print(f"  有数据页面: {pages_with_data} 页")
-        print(f"  有匹配页面: {pages_with_matches} 页")
-        print(f"  总匹配数: {total_matched} 个")
-        print(f"  目标数量: {max_posts} 个")
-        print(f"  搜索耗时: {total_time:.1f} 秒")
-        
-        if total_posts_scanned > 0:
-            match_rate = (total_matched / total_posts_scanned) * 100
-            print(f"  整体匹配率: {match_rate:.2f}%")
-        
-        if total_time > 0:
-            pages_per_sec = total_searched_pages / total_time
-            posts_per_sec = total_posts_scanned / total_time
-            print(f"  搜索速度: {pages_per_sec:.1f} 页/秒 | {posts_per_sec:.1f} 条/秒")
-        
-        if total_matched < max_posts:
-            print(f"⚠️  只找到 {total_matched} 个匹配，未达到目标 {max_posts}")
-            if consecutive_empty_pages >= max_consecutive_empty:
-                print(f"  💡 原因: 连续多页没有数据，可能已搜索到数据边界")
-            elif current_page > max_total_pages:
-                print(f"  💡 原因: 已达到最大搜索页数限制")
+        # 显示找到的帖子数量
+        if total_matched > 0:
+            print(f"找到 {total_matched} 个匹配帖子:")
         else:
-            print(f"🎉 成功找到目标数量的匹配!")
-        
-        if total_matched == 0:
-            print("❌ 未找到匹配的帖子")
+            print(f"未找到匹配的帖子")
             return 0, 0
         
         # ========== 显示和保存帖子 ==========
@@ -3206,16 +3136,11 @@ class BDSMForumSpider:
         display_count = len(display_posts)
         saved_count = 0  # 已保存的帖子数
         
-        print(f"\n📄 显示 {display_count} 个匹配帖子:\n")
-        
         # 分批显示，每批20个
-        posts_per_batch = 15
+        posts_per_batch = 20
         for batch_start in range(0, display_count, posts_per_batch):
             batch_end = min(batch_start + posts_per_batch, display_count)
             current_batch = display_posts[batch_start:batch_end]
-            
-            print(f"📋 显示第 {batch_start+1}-{batch_end} 个帖子:")
-            print("-" * 50)
             
             for i, post in enumerate(current_batch, 1):
                 index = batch_start + i
@@ -3223,55 +3148,77 @@ class BDSMForumSpider:
                 user_info = post.get("user", {})
                 user_id = user_info.get("id") or post.get("user_id")
                 
-                print(f"[{index}] 帖子ID: {post_id}")
-                
-                # 获取并显示用户信息
+                # 获取用户信息
+                complete_user_info = None
                 if user_id:
                     complete_user_info = self.get_complete_user_info(user_id)
-                    if complete_user_info:
-                        print(f"   用户: {complete_user_info.get('name', f'用户_{user_id}')} (ID: {user_id})")
-                        
-                        # 显示详细信息
-                        if complete_user_info.get('age'):
-                            print(f"   年龄: {complete_user_info['age']}岁", end="")
-                            if complete_user_info.get('birthday'):
-                                print(f" | 生日: {complete_user_info['birthday']}")
-                            else:
-                                print()
-                        
-                        if complete_user_info.get('sex_text'):
-                            gender_line = f"性别: {complete_user_info['sex_text']}"
-                            if complete_user_info.get('sex_o_text'):
-                                gender_line += f" | 性取向: {complete_user_info['sex_o_text']}"
-                            if complete_user_info.get('sex_p_text'):
-                                gender_line += f" | 角色: {complete_user_info['sex_p_text']}"
-                            print(f"   {gender_line}")
-                        
-                        if complete_user_info.get('height'):
-                            height_line = f"身高: {complete_user_info['height']}cm"
-                            if complete_user_info.get('weight'):
-                                height_line += f" | 体重: {complete_user_info['weight']}kg"
-                            print(f"   {height_line}")
-                        
-                        if complete_user_info.get('country'):
-                            print(f"   地区: {complete_user_info['country']}")
-                        
-                        if complete_user_info.get('last_time'):
-                            print(f"   最后在线: {complete_user_info['last_time']}")
+                
+                # 显示帖子信息
+                print(f"[{index}] 帖子ID: {post_id}")
+                
+                # 显示用户信息
+                if complete_user_info:
+                    # 用户名
+                    username = complete_user_info.get('name', '')
+                    if username:
+                        print(f"用户: {username} (ID: {user_id})")
+                    else:
+                        print(f"用户: (ID: {user_id})")
+                    
+                    # 年龄生日
+                    if complete_user_info.get('age'):
+                        age_info = f"年龄: {complete_user_info['age']}岁"
+                        if complete_user_info.get('birthday'):
+                            age_info += f"\n生日: {complete_user_info['birthday']}"
+                        print(age_info)
+                    
+                    # 性别、性取向、角色
+                    gender_info = ""
+                    if complete_user_info.get('sex_text'):
+                        gender_info = f"性别: {complete_user_info['sex_text']}"
+                    if complete_user_info.get('sex_o_text'):
+                        if gender_info:
+                            gender_info += f"\n性取向: {complete_user_info['sex_o_text']}"
+                        else:
+                            gender_info = f"性取向: {complete_user_info['sex_o_text']}"
+                    if complete_user_info.get('sex_p_text'):
+                        if gender_info:
+                            gender_info += f"\n角色: {complete_user_info['sex_p_text']}"
+                        else:
+                            gender_info = f"角色: {complete_user_info['sex_p_text']}"
+                    
+                    if gender_info:
+                        print(gender_info)
+                    
+                    # 身高体重
+                    if complete_user_info.get('height'):
+                        height_info = f"身高: {complete_user_info['height']}cm"
+                        if complete_user_info.get('weight'):
+                            height_info += f"\n体重: {complete_user_info['weight']}kg"
+                        print(height_info)
+                    
+                    # 地区
+                    if complete_user_info.get('country'):
+                        print(f"地区: {complete_user_info['country']}")
+                    
+                    # 最后在线时间
+                    if complete_user_info.get('last_time'):
+                        print(f"最后在线: {complete_user_info['last_time']}")
                 
                 # 发布时间
                 if post.get('create_time'):
                     create_time = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(post.get("create_time", 0)))
-                    print(f"   发布时间: {create_time}")
+                    print(f"发布时间: {create_time}")
                 
                 # 帖子内容（限制长度）
-                content = post.get('content') or post.get('title') or '[无内容]'
-                if len(content) > 200:
-                    content = content[:200] + "..."
-                print(f"   内容: {content}")
+                content = post.get('content') or post.get('title') or ''
+                if content:
+                    # 去除换行，保留原始格式
+                    content = content.replace('\n', ' ')
+                    print(f"内容: {content}")
                 
                 # 统计信息
-                print(f"   浏览: {post.get('onclick', 0)} | 赞: {post.get('dig_count', 0)} | 评论: {post.get('com_count', 0)}")
+                print(f"浏览: {post.get('onclick', 0)} 赞: {post.get('dig_count', 0)} 评论: {post.get('com_count', 0)}")
                 
                 # 图片信息
                 files = post.get("files", [])
@@ -3288,33 +3235,33 @@ class BDSMForumSpider:
                             image_urls.append(url)
                     
                     if image_urls:
-                        print(f"   图片: {len(image_urls)}张")
+                        print(f"图片: {len(image_urls)}张")
+                        for idx, url in enumerate(image_urls, 1):
+                            print(f"{idx}. {url}")
                 
                 # 自动保存
+                save_result = ""
                 if user_id and complete_user_info:
                     if self.save_post_for_user_crawl(post, complete_user_info, manual_mode=False, index=index):
                         saved_count += 1
-                        print("   💾 已保存")
+                        save_result = "[OK]"
                     else:
-                        print("   ❌ 保存失败")
+                        save_result = "[失败]"
+                
+                if save_result:
+                    print(f"{save_result} 帖子 [{index}] 已保存")
                 
                 print("-" * 50)
                 time.sleep(0.02)  # 小延迟避免输出太快
-            
-            # 如果不是最后一批，暂停一下
-            if batch_end < display_count:
-                print(f"\n⏭️  继续显示下一批...")
-                time.sleep(0.2)
         
         # ========== 最终统计 ==========
-        print(f"\n✅ 搜索完成!")
-        print(f"📊 最终结果:")
-        print(f"  目标匹配: {max_posts} 个")
-        print(f"  实际匹配: {total_matched} 个")
-        print(f"  显示帖子: {display_count} 个")
-        print(f"  保存帖子: {saved_count} 个")
-        print(f"  总耗时: {total_time:.1f} 秒")
+        total_time = time.time() - start_time
+        
+        print("搜索完成")
+        print(f"匹配: {total_matched}条 保存: {saved_count}条 耗时: {total_time:.1f}秒")
         print("=" * 60)
+        
+        return saved_count, display_count
         
         return saved_count, display_count
     
